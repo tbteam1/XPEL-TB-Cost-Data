@@ -1,0 +1,3348 @@
+---
+title: "Xpel Sensitivity Analyses"
+author: "Ryan Thompson"
+date: "3/4/2021"
+output: html_document:
+  keep_md: yes
+
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Research Question: what are the costs/benefits of decentralized Xpert testing versus centralized Xpert testing?
+
+#Scenario 1: 3871 patients (2019 Xpel service volume) receive Xpert testing at central testing facilities
+#Scenario 2: 4135 patients (2019 Xpel service volume) receive Xpert testing at decentralized testing sites
+
+#Inputs: The number of patients receiving Xpert testing, the proportion of those tested who began treatment within 2 weeks of test (other options: number positive tests, number positive tests) , costs
+#Output 1: The number of patients initiating treatment within 2 weeks of receiving their test result.
+#Output 2: The total costs of each program.
+#Output 3: An incremental cost-effectiveness ratio estimating the incremental cost per additional TB positive patient initiating treatment within 2 weeks in the decentralized arm.
+
+```{r packages}
+library(ggplot2)
+library(dplyr)
+library(triangle)
+library(car)
+library(collapse)
+```
+
+#First, set up the treatment.sim function by denoting all relevant input parameters you’re doing PSA with, and then some function for coming up with your total costs and total effectiveness. (may just be an aggregate sum of each).
+
+
+```{r create model parameters}
+#UPDATE ALL
+treatment.sim<-function(
+  num.presenting, #the number of individuals presenting for care. Fixed between study arms
+  cen.testedpro, #the proportion of indivuals presenting for care who receive testing in the centralized arm.
+  cen.14daypro, #the proportion of patients tested who are confirmed TB positive and initiate treatment within 14 days in the centralized arm (default value = 4.57%)
+  decen.testedpro, #the proportion of individuals presenting for care who receive testing in the decentralized arm.
+  decen.14daypro, #the proportion of patients tested who are confirmed TB positive and initiate treatment within 14 days in the decentralized arm (default value = 6.02%)
+  cen.consumable.cost, # the fixed per-test cost of consumables in the centralized testing arm (default = $11.65. Observed Range: $11.35-12.04)
+  cen.staff.cost, #the staff costs for centralized testing (default = $0.49, Observed Range: $0.07-1.20)
+  cen.equipment.cost, #the equipment costs for centralized testing (default = $3.82, Observed Range: $1.88-7.93)
+  cen.building.cost, #the building costs for centralized testing (default = $0.35, Observed Range: $0.17-0.72)
+  cen.overhead.cost, #the overhead costs for centralized testing (default = $0.01, Observed Range: $0.01-0.03)
+  cen.transport.cost, #the transportation costs for centralized testing (fixed at $1.34)
+  decen.consumable.cost, # the fixed per-test cost of consumables in the decentralized testing arm (default = $10.84. Observed Range: $10.82-10.98)
+  decen.staff.cost, #the staff costs for decentralized testing (default = $0.51, Observed Range: $0.19-0.83)
+  decen.equipment.cost, #the equipment costs for decentralized testing (default = $6.79, Observed Range: $5.23-11.20)
+  decen.building.cost, #the building costs for decentralized testing (default = $0.03, Observed Range: $0.02-0.06)
+  decen.overhead.cost, #the overhead costs for decentralized testing (default = $0.03, Observed Range: $0.02-0.05)
+  decen.impl.cost, #the implementation costs for decentralized testing (default = $1.47, Observed Range: $1.13-$2.43)
+  decen.main.cost, #the maintenance costs for decentralized testing (default = $0.79, Observed Range: $0.42-1.96)
+  cen.error.term, #An error term to avoid "perfect" correlation, it is +/- 10% of the observed "total cost per patient" in each study arm. The variable is for the centralized arm.
+  decen.error.term, #Error term for the decentralized arm.
+  decen.propositive, #Proportion of tests positive (ignore treatment initiation) in decen
+  cen.propositive, #Proportion of tests positive (ignore treatmnet initiation) in cen
+  cen.ssm.cost, #Cost of SSM at centralized site
+  cen.percent.smm, #percent of patients that receive a ssm (ssm only + both)
+  cen.percent.xpert #percent that receive xpert (xpert only + both)
+){ #Here, set up our values of interest (total cost and # of patients initiating treatment)
+  cen.numtest <- num.presenting * cen.testedpro
+  cen.primary <- cen.numtest * cen.14daypro
+  #The total number of patients initiating treatment within 14 days
+  #Next, calculate the total costs for each cost category
+  
+  cen.consumable.cost <- cen.consumable.cost
+  cen.consumable.totcost <- (cen.consumable.cost * 5000)
+  
+  cen.staff.cost <- cen.staff.cost
+  cen.staff.totcost <- (cen.staff.cost * 5000)
+  
+  cen.equipment.cost.corr <- (cen.equipment.cost / cen.numtest)
+  cen.equipment.totcost <- (cen.equipment.cost.corr * 5000) #Function set-up so that equipment cost inversely related to number tested
+  
+  cen.building.cost <- cen.building.cost
+  cen.building.totcost <- (cen.building.cost * 5000)
+  
+  cen.overhead.cost <- cen.overhead.cost
+  cen.overhead.totcost <- (cen.overhead.cost * 5000)
+  
+  cen.transport.cost <- cen.transport.cost
+  cen.transport.totcost <- (cen.transport.cost * 5000)
+  
+  cen.ssm.cost <- cen.ssm.cost
+  cen.ssm.totcost <- (cen.ssm.cost * 5000)
+  
+  #### NEW
+  cen.pp.cost.old <- (cen.consumable.cost + cen.staff.cost + cen.equipment.cost.corr + cen.building.cost + cen.overhead.cost + cen.transport.cost + cen.ssm.cost) * cen.error.term
+  
+  cen.pp.cost.old.no.ssm <- (cen.consumable.cost + cen.staff.cost + cen.equipment.cost.corr + cen.building.cost + cen.overhead.cost + cen.transport.cost) * cen.error.term
+  
+   
+  #cen.percent.smm <- cen.percent.smm
+  #cen.percent.xpert <- cen.percent.xpert
+  
+  cen.pp.cost.ssm <- (cen.ssm.cost * 0.8)
+  
+  cen.pp.cost.xpert <- ((cen.consumable.cost + cen.staff.cost + cen.equipment.cost.corr + cen.building.cost + cen.overhead.cost + cen.transport.cost) * 0.42)
+  
+  cen.pp.cost <- cen.pp.cost.ssm + cen.pp.cost.xpert
+  
+  cen.pp.cost.error <- (cen.pp.cost * cen.error.term)
+  
+  ####
+  
+    cen.total.cost <- (cen.consumable.totcost + cen.staff.totcost + cen.equipment.totcost + cen.building.totcost + cen.overhead.totcost + cen.transport.totcost + cen.ssm.totcost) #Total cost for the arm
+  
+  
+  #cen.total.cost.error <- (cen.total.cost * cen.error.term)
+  cen.total.cost.error <- (cen.pp.cost.error * cen.numtest) #This is the updated version, more accurate
+
+  
+####################################################################################################### DECENTRALIZED ############################## ##########################################################################
+  
+  decen.numtest <- num.presenting * decen.testedpro
+  decen.primary <- decen.numtest * decen.14daypro #The total number of patients initiating treatment within 14 days.
+  #Next, calculate the total costs for each cost category
+  
+  decen.consumable.cost <- decen.consumable.cost
+  decen.consumable.totcost <- (decen.consumable.cost * 5000)
+  
+  decen.staff.cost <- decen.staff.cost
+  decen.staff.totcost <- (decen.staff.cost * 5000)
+  
+  decen.equipment.cost.corr <- (decen.equipment.cost / decen.numtest)
+  decen.equipment.totcost <- (decen.equipment.cost.corr * 5000) #For this one, may want to set up a function so equipment cost decreases with service volume
+  
+  decen.building.cost <- decen.building.cost
+  decen.building.totcost <- (decen.building.cost * 5000)
+  
+  decen.overhead.cost <- decen.overhead.cost
+  decen.overhead.totcost <- (decen.overhead.cost * 5000)
+  
+  decen.impl.cost.corr <- (decen.impl.cost / decen.numtest)
+  decen.impl.totcost <- (decen.impl.cost.corr * 5000)
+  
+  decen.main.cost <- decen.main.cost  
+  decen.main.totcost <- (decen.main.cost * 5000)
+  
+  decen.pp.cost <- (decen.consumable.cost + decen.staff.cost + decen.equipment.cost.corr + decen.building.cost + decen.overhead.cost + decen.impl.cost.corr + decen.main.cost) * 0.99
+  
+  decen.pp.cost.error <- (decen.pp.cost * decen.error.term)
+  
+  
+  decen.total.cost <- (decen.consumable.totcost + decen.staff.totcost + decen.equipment.totcost + decen.building.totcost + decen.overhead.totcost + decen.impl.totcost + decen.main.totcost) #Total cost for the decentralized arm
+  
+  #decen.total.cost.error <- (decen.total.cost * decen.error.term)
+  decen.total.cost.error <- decen.pp.cost.error * decen.numtest
+  
+#ICER calculations
+    cen.effect.primary <- 5000 * cen.testedpro * cen.14daypro
+    decen.effect.primary <- 5000 * decen.testedpro * decen.14daypro
+  
+incr.total.cost <- (decen.total.cost.error - cen.total.cost.error)
+  incr.total.effect <- (decen.primary - cen.primary)
+  incr.ratio <- (incr.total.cost / incr.total.effect)
+  
+  decen.dxpos <- decen.numtest * decen.propositive
+  cen.dxpos <- cen.numtest * cen.propositive
+  dx.incr.effect <- (decen.dxpos - cen.dxpos)
+  dx.icer <- (incr.total.cost / dx.incr.effect)
+  
+  #return the key results: cure and cost in each scenario
+  
+  results<-c(num.presenting,
+             cen.testedpro,
+             cen.numtest, 
+             cen.14daypro, 
+             cen.primary, 
+             cen.consumable.cost,
+             cen.consumable.totcost, 
+             cen.staff.cost,
+             cen.staff.totcost, 
+             cen.equipment.cost.corr,
+             cen.equipment.totcost,
+             cen.building.cost,
+             cen.building.totcost, 
+             cen.overhead.cost,
+             cen.overhead.totcost, 
+             cen.transport.cost,
+             cen.transport.totcost,
+             cen.pp.cost,
+             cen.pp.cost.error,
+             cen.total.cost,
+             cen.total.cost.error,
+             decen.testedpro,
+             decen.numtest, 
+             decen.14daypro, 
+             decen.primary, 
+             decen.consumable.cost,
+             decen.consumable.totcost, 
+             decen.staff.cost,
+             decen.staff.totcost, 
+             decen.equipment.cost.corr,
+             decen.equipment.totcost,
+             decen.building.cost,
+             decen.building.totcost,
+             decen.overhead.cost,
+             decen.overhead.totcost,
+             decen.impl.cost.corr,
+             decen.impl.totcost,
+             decen.main.cost,
+             decen.main.totcost,
+             decen.pp.cost,
+             decen.pp.cost.error,
+             decen.total.cost,
+             decen.total.cost.error,
+             cen.effect.primary,
+             decen.effect.primary,
+             incr.total.cost,
+             incr.total.effect,
+             incr.ratio,
+             decen.propositive,
+             cen.propositive,
+             decen.dxpos,
+             cen.dxpos,
+             dx.incr.effect,
+             dx.icer,
+             cen.ssm.cost,
+             cen.ssm.totcost,
+             #cen.percent.smm, 
+             #cen.percent.xpert,
+             cen.pp.cost.ssm,
+             cen.pp.cost.xpert,
+             cen.pp.cost.old,
+             cen.pp.cost.old.no.ssm) 
+  
+  names(results)<-c("Number presenting for care",
+                    "Prop who are tested",
+                    "Cen number tested",
+                    "Cen Proportion 1ary outcome",
+                    "Cen 1ary outcome",
+                    "Cen Consumable costs",
+                    "Cen Consumable Tot costs",
+                    "Cen Staff costs",
+                    "Cen Staff Tot costs",
+                    "Cen Equip costs",
+                    "Cen Equip Tot costs",
+                    "Cen Build costs",
+                    "Cen Build Tot costs",
+                    "Cen Overhead costs",
+                    "Cen Overhead Tot costs",
+                    "Cen Transport costs",
+                    "Cen Transport Tot costs",
+                    "Cen Per Patient costs",
+                    "Cen Per Pt costs w/ error",
+                    "Cen Total costs",
+                    "Cen Total costs w/ error",
+                    "Decen prop tested",
+                    "Decen number tested",
+                    "Decen Proportion 1ary outcome",
+                    "Decen 1ary outcome",
+                    "Decen Consumable costs",
+                    "Decen Consumable Tot costs",
+                    "Decen Staff costs",
+                    "Decen Staff Tot costs",
+                    "Decen Equip costs",
+                    "Decen Equip Tot costs",
+                    "Decen Build costs",
+                    "Decen Build Tot costs",
+                    "Decen Overhead costs",
+                    "Decen Overhead Tot costs",
+                    "Decen Impl costs",
+                    "Decen Impl Tot costs",
+                    "Decen Main costs",
+                    "Decen Main Tot costs",
+                    "Decen Per Patient costs",
+                    "Decen Per Pt costs w/ error",
+                    "Decen Total costs",
+                    "Decen Total costs w/ error",
+                    "Total Primary Cen, 5k people",
+                    "Total Primary Decen, 5k people",
+                    "Incr Total Cost",
+                    "Incr Total Effect",
+                    "ICER",
+                    "Decen Proportion Pos",
+                    "Cen Proportion Pos",
+                    "Decen # Pos",
+                    "Cen # Pos",
+                    "Incr # Tested",
+                    "ICER Dx",
+                    "Cen SSM Cost",
+                    "Cen SSM Total Cost",
+                    #"% Receive SSM",
+                    #"% Receive Xpert",
+                    "SSM Cost per Patient",
+                    "Xpert Cost per Patient",
+                    "Old per patient cost",
+                    "Old per patient cost, no ssm"
+                    )
+  
+  return(results)
+}
+```
+
+###################################################################################################### 1 - 249 patients ############################
+##########################################################################
+
+
+```{r set-up the parameter values}
+param.ranges<-data.frame("variable"=character(23),
+                         "distribution"=character(23),
+                         "parameter1"=numeric(23),
+                         "parameter2"=numeric(23),
+                         "parameter3"=numeric(23),
+                         "parameter1.name"=numeric(23), 
+                         "parameter2.name"=numeric(23),
+                         "parameter3.name"=numeric(23))
+
+param.ranges[,"variable"]<-c(
+"num.presenting",
+"cen.testedpro",
+"cen.14daypro",
+"decen.testedpro",
+"decen.14daypro",
+"cen.consumable.cost",
+"cen.staff.cost",
+"cen.equipment.cost",
+"cen.building.cost",
+"cen.overhead.cost",
+"cen.transport.cost", 
+"decen.consumable.cost",
+"decen.staff.cost",
+"decen.equipment.cost",
+"decen.building.cost",
+"decen.overhead.cost", 
+"decen.impl.cost",
+"decen.main.cost",
+"cen.error.term",
+"decen.error.term",
+"decen.propositive",
+"cen.propositive",
+"cen.ssm.cost"
+)
+#Assigns a name to each of the above 18 variables in the param.ranges data frame.
+
+param.ranges[,"distribution"]<-c(
+"beta", #Number presenting for care
+"beta", #Proportion presenting who are tested
+"beta", #Proportion cases that are positive, cen
+"beta", #Proportion presenting who are tested (decen)
+"beta", #Proportion cases that are positive, decent
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #transport
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #implementation
+"beta", #maintenance
+"beta", #cen error term
+"beta", #decen error term
+"beta", #decen prop. positive
+"beta", #cen prop. positive
+"beta" #cen ssm
+)
+#Assigns a distribution to each parameter. Note: common cost distributions are uniform, normal, triangular, and beta.
+
+#ALL UPDATED FOR INFLATION
+param.ranges[,"parameter1"]<-c(
+  1, #Number presenting for care
+  0.8862, #proportion presenting who are tested, cen 25% below
+  0.0412, #Proportion cases that are positive, 25% below PE
+  1, #proportion presenting who are tested, -5% of PE
+  0.0538, #Proportion cases that positive, decent, 25% below PE
+  11.67, #consumable cen
+  0.09, #staff cen
+  2289.68, #equipment cen
+  0.18, #building cen
+  0.01, #overhead cen
+  0.27, #transport cen
+  10.82, #consumable decen
+  0.19, #staff decen
+  3396.90, #equipment decen
+  0.02, #building decen
+  0.02, #overhead decen
+  736.03, #implementation decen
+  0.42, #maintenance decen
+  0.9, #cen error term
+  0.9, #decen error term
+  0.06203, #decen prop positive
+  0.05813, #cen prop positive
+  2.04 #cen ssm cost
+)
+param.ranges[,"parameter2"]<-c(
+  249, #Number presenting for care
+  0.9862, #proportion presenting who are tested, cen +5% of PE
+  0.0503, #Proportion cases that positive, cen, 
+  1, #proportion presenting who are tested, decen
+  0.0657, #Proportion cases that positive, decent, 25% above PE
+  12.53, #consumable cen
+  1.49, #staff cen
+  2289.68, #equipment cen
+  0.89, #building cen
+  0.04, #overhead cen
+  3.71, #transport cen
+  10.98, #consumable decen
+  0.83, #staff decen
+  3396.90, #equipment decen
+  0.06, #building decen
+  0.05, #overhead decen
+  736.03, #implementation decen
+  1.96, #maintenance decen
+  1.1, #cen error term
+  1.1, #decen error term
+  0.07581, #decen prop positive
+  0.07104, #cen prop positive
+  2.95 #cen ssm cost
+)
+param.ranges[,"parameter3"]<-c(
+  125, #Number presenting for care
+  0.9362, #proportion presenting who are tested, cen
+  0.0457, #Proportion cases that are positive, cen
+  1, #proportion presenting who are tested, decen
+  0.0597, #Proportion cases that are positive, decent
+  12.05, #consumable cen
+  0.61, #staff cen
+  2289.68, #equipment cen
+  0.35, #building cen
+  0.01, #overhead cen
+  1.38, #transport cen
+  10.84, #consumable decen
+  0.51, #staff decen
+  3396.90, #equipment decen
+  0.03, #building decen
+  0.03, #overhead decen
+  736.03, #implementation decen
+  0.79, #maintenance decen
+  1, #cen error term
+  1, #decen error term
+  0.0689, #decen prop positive
+  0.0646, #cen prop positive
+  2.41 #cen ssm cost
+)
+#Parameter 1 is min, 2 is max, 3 is PE
+```
+
+
+```{r add the alpha and beta values}
+#Updated with inflation
+param.ranges[,"parameter1.name"]<-c( #The ALPHA value
+  4, #number presenting for care
+  4, #central proportion tested
+  4, #central proportion TB+
+  4, #decen proportion tested
+  4, #decentral proportion TB+
+  4, #central consumable costs
+  4, #central staff costs
+  4, #central equipment costs
+  4, #central building costs
+  4, #central overhead costs
+  4, #central transport costs
+  4, #decen consumable costs
+  4, #decen staff costs
+  4, #decen equipment costs
+  4, #decen building costs
+  4, #decen overhead costs
+  4, #decen implementation costs
+  4, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop positive
+  4, #cen prop positive
+  4 #cen ssm cost
+  )
+  
+param.ranges[,"parameter2.name"]<-c( #The BETA value
+  4, #total number tested
+  4, #central proportion tested
+  3.980434, #central proportion TB+
+  1, #decen proprtion tested
+  4, #decentral proportion TB+
+  4.798187, #central consumable costs
+  6.076922, #central staff costs
+  1, #central equipment costs
+  10.52941, #central building costs
+  88, #central overhead costs
+  7.2965603, #central transport costs
+  22, #decen consumable costs
+  4, #decen staff costs
+  1, #decen equipment costs
+  10, #decen building costs
+  7, #decen overhead costs
+  1, #decen implementation costs
+  10.48649, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop pos
+  4, #den prop pos
+  5.39 #cen ssm cost
+  )
+  
+param.ranges[,"parameter3.name"]<-c(#Non-centrality parameter, ask David/Hojoon what that is
+  0, #number presenting
+  0, #central proprtion tested
+  0, #central proportion TB+ and start 14 days
+  0, #decen proportion tested
+  0, #decentral proportion TB+ and start 14 days
+  0, #central consumable costs
+  0, #central staff costs
+  0, #central equipment costs
+  0, #central building costs
+  0, #central overhead costs
+  0, #central transport costs
+  0, #decen consumable costs
+  0, #decen staff costs
+  0, #decen equipment costs
+  0, #decen building costs
+  0, #decen overhead costs
+  0, #decen implementation costs
+  0, #decen maintenance costs
+  0, #cen error term
+  0, #decen error term
+  0, #decen prop pos
+  0, #cen prop pos
+  0 #cen ssm cost
+  )
+
+
+```
+
+```{r simulation prep, repetitions and matrix}
+#Define the number of simulations you intend to perform
+set.seed(269130)
+n.sims<-1000
+
+
+#Create a matrix to hold all of the sampled parameter values
+#Each row will represent 1 simulation; the columns in the row will correspond to the sampled parameter values for the row
+sampled.values<-matrix(nrow=n.sims,ncol=nrow(param.ranges))
+colnames(sampled.values)<-param.ranges[,"variable"]
+
+#Loop over the parameters (columns in sampled.values, rows in param.ranges) that will be sampled
+for(p in 1:ncol(sampled.values)){
+  
+  #check for the distribution that will be used
+  #check for a uniform distribution
+  if(param.ranges[p,"distribution"]=="uniform"){
+    
+    n.params<-runif( #sample from a uniform distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      min=param.ranges[p,"parameter1"], #define the lower bound parameter
+      max=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  #if not uniform, check if it is normal
+  if(param.ranges[p,"distribution"]=="normal"){
+    
+    n.params<-rnorm( #sample from a normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      mean=param.ranges[p,"parameter1"], #define the lower bound parameter
+      sd=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not uniform, check if it is lognormal
+  if(param.ranges[p,"distribution"]=="lognormal"){
+    
+    n.params<-rlnorm( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      meanlog=param.ranges[p,"parameter1"], #define the mean parameter
+      sdlog=param.ranges[p,"parameter2"] #define the standard deviation parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not lognormal, check if it is gamma
+  if(param.ranges[p,"distribution"]=="gamma"){
+    n.params<-rgamma( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape=param.ranges[p,"parameter1"], #define the k parameter
+      scale=param.ranges[p,"parameter2"] #define the theta parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not gamma, check if it is triangular
+  if(param.ranges[p,"distribution"]=="triangular"){
+    n.params<- rtriangle( #sample from a triangular distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      a = param.ranges[p,"parameter1"], #define the lower bound paramater/parameter input 1
+      b = param.ranges[p,"parameter2"], #define the upper bound parameter
+      c = param.ranges[p,"parameter3"] #define the mode/central tendency parameter
+    )
+  }
+  
+  #if not triangular, check if it is beta
+  if(param.ranges[p,"distribution"]=="beta"){
+    n.params<- rbeta( #sample from a beta distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape1 = param.ranges[p,"parameter1.name"], #define the alpha shape parameter
+      shape2 = param.ranges[p,"parameter2.name"], #define the beta shape parameter
+      ncp = param.ranges[p,"parameter3.name"] #define the non-centrality parameter (should be 0)
+    ) 
+    #(parameter1 + (p *(parameter2 - parameter1)))
+  }
+  sampled.values[,p]<-n.params #fill the column of the matrix with the vector of sampled values
+  
+  #go to the next column
+}
+
+```
+
+
+
+```{r calculate "true" simulated values}
+#Change variable names to match 99DOTS, no other changes
+num.presenting <- (sampled.values[,1] * (param.ranges[1,4] - param.ranges[1,3])) + param.ranges[1,3]
+
+cen.testedpro <- (sampled.values[,2] * (param.ranges[2,4] - param.ranges[2,3])) + param.ranges[2,3] #For central testing volume
+
+cen.14daypro <- (sampled.values[,3] * (param.ranges[3,4] - param.ranges[3,3])) + param.ranges[3,3] #For proportion of cases tested that are TB+
+
+decen.testedpro <- (sampled.values[,4] * (param.ranges[4,4] - param.ranges[4,3])) + param.ranges[4,3] #Decent testing volume
+
+decen.14daypro <- (sampled.values[,5] * (param.ranges[5,4] - param.ranges[5,3])) + param.ranges[5,3] #Proportion tested with TB, decentralized
+
+cen.consumable.cost <- (sampled.values[,6] * (param.ranges[6,4] - param.ranges[6,3])) + param.ranges[6,3] #Cen consumable cost
+
+cen.staff.cost <- (sampled.values[,7] * (param.ranges[7,4] - param.ranges[7,3])) + param.ranges[7,3] #Cen staff cost
+
+cen.equipment.cost <- (sampled.values[,8] * (param.ranges[8,4] - param.ranges[8,3])) + param.ranges[8,3] #Cen equipment cost
+
+cen.building.cost <- (sampled.values[,9] * (param.ranges[9,4] - param.ranges[9,3])) + param.ranges[9,3] #Cen building cost
+
+cen.overhead.cost <- (sampled.values[,10] * (param.ranges[10,4] - param.ranges[10,3])) + param.ranges[10,3] #Cen overhead cost, double check this one
+
+cen.transport.cost <- (sampled.values[,11] * (param.ranges[11,4] - param.ranges[11,3])) + param.ranges[11,3] #Cen transport cost
+
+decen.consumable.cost <- (sampled.values[,12] * (param.ranges[12,4] - param.ranges[12,3])) + param.ranges[12,3] #Decen consumable cost
+
+decen.staff.cost <- (sampled.values[,13] * (param.ranges[13,4] - param.ranges[13,3])) + param.ranges[13,3] #Decen staff cost
+
+decen.equipment.cost <- (sampled.values[,14] * (param.ranges[14,4] - param.ranges[14,3])) + param.ranges[14,3] #Decen equipment cost
+
+decen.building.cost <- (sampled.values[,15] * (param.ranges[15,4] - param.ranges[15,3])) + param.ranges[15,3] #Decen building cost
+
+decen.overhead.cost <- (sampled.values[,16] * (param.ranges[16,4] - param.ranges[16,3])) + param.ranges[16,3] #Decen overhead cost
+
+decen.impl.cost <- (sampled.values[,17] * (param.ranges[17,4] - param.ranges[17,3])) + param.ranges[17,3] #Decen implementation cost
+
+decen.main.cost <- (sampled.values[,18] * (param.ranges[18,4] - param.ranges[18,3])) + param.ranges[18,3] #Decen maintenance costs
+
+cen.error.term <- (sampled.values[,19] * (param.ranges[19,4] - param.ranges[19,3])) + param.ranges[19,3] #Cen error term
+
+decen.error.term <- (sampled.values[,20] * (param.ranges[20,4] - param.ranges[20,3])) + param.ranges[20,3] #
+
+decen.propositive <- (sampled.values[,21] * (param.ranges[21,4] - param.ranges[21,3])) + param.ranges[21,3] #
+
+cen.propositive <- (sampled.values[,22] * (param.ranges[22,4] - param.ranges[22,3])) + param.ranges[22,3] #
+
+cen.ssm.cost <- (sampled.values[,23] * (param.ranges[23,4] - param.ranges[23,3])) + param.ranges[23,3] #cen ssm cost
+
+#Change to reflect 99DOTS values
+sampled.values.true <- cbind(num.presenting,
+                           cen.testedpro,
+                           cen.14daypro,
+                           decen.testedpro,
+                           decen.14daypro,
+                           cen.consumable.cost,
+                           cen.staff.cost,
+                           cen.equipment.cost,
+                           cen.building.cost,
+                           cen.overhead.cost,
+                           cen.transport.cost,
+                           decen.consumable.cost,
+                           decen.staff.cost,
+                           decen.equipment.cost,
+                           decen.building.cost,
+                           decen.overhead.cost,
+                           decen.impl.cost,
+                           decen.main.cost,
+                           cen.error.term,
+                           decen.error.term,
+                           decen.propositive,
+                           cen.propositive,
+                           cen.ssm.cost
+                           )
+
+                             
+```
+
+```{R Run the Simulations}
+#NO CHANGES
+#Perform your simulations using a combination of apply() and do.call()
+#apply() will iteratively perform the same function to each row and/or column of a matrix argument
+#The matrix of sampled input values will serve as our matrix argument X
+#We will set MARGIN=1 to indicate that we want to iterate over the rows (not columns) of the matrix
+#We will create a custom function to apply over each row (r)
+#The key of the custom function is do.call() 
+#do.call() calls a function of your choice and passes user-defined arguments to it
+#we will use it to call our previously-defined function treatment.sim()
+#We will supply it our row of sampled input values as user-defined arguments
+#arguments for do.call() must be in the form of a list: as.list(r)
+#apply() returns the outputs of each iteration as a column of a matrix
+#for ease of use, we will transpose - t() - the matrix so that each iteration will be returned as a row
+
+sim.out1<-t(apply(X=sampled.values.true,MARGIN=1, FUN=function(r) do.call(what=treatment.sim, args=as.list(r)) ))
+#for each row of sampled.values, run function r which is our treatment.sim formula.
+sim.out.df1 <- as.data.frame(sim.out1)
+
+
+
+#Becase treatment.sim() returns a vector of 4 results ("Scenario1.Cure","Scenario1.Cost","Scenario2.Cure","Scenario2.Cost")
+#sim.out contains 4 columns, each corresponding to one of the outputs of treatment.sim()
+#The first row of sim.out corresponds to the results of the simulation created by the first row of sampled input values in sampled.value
+```
+
+########################################################################################################## 250 - 499 ###############################
+##########################################################################
+
+```{r set-up the parameter values}
+param.ranges<-data.frame("variable"=character(23),
+                         "distribution"=character(23),
+                         "parameter1"=numeric(23),
+                         "parameter2"=numeric(23),
+                         "parameter3"=numeric(23),
+                         "parameter1.name"=numeric(23), 
+                         "parameter2.name"=numeric(23),
+                         "parameter3.name"=numeric(23))
+
+param.ranges[,"variable"]<-c(
+"num.presenting",
+"cen.testedpro",
+"cen.14daypro",
+"decen.testedpro",
+"decen.14daypro",
+"cen.consumable.cost",
+"cen.staff.cost",
+"cen.equipment.cost",
+"cen.building.cost",
+"cen.overhead.cost",
+"cen.transport.cost", 
+"decen.consumable.cost",
+"decen.staff.cost",
+"decen.equipment.cost",
+"decen.building.cost",
+"decen.overhead.cost", 
+"decen.impl.cost",
+"decen.main.cost",
+"cen.error.term",
+"decen.error.term",
+"decen.propositive",
+"cen.propositive",
+"cen.ssm.cost"
+)
+#Assigns a name to each of the above 18 variables in the param.ranges data frame.
+
+param.ranges[,"distribution"]<-c(
+"beta", #Number presenting for care
+"beta", #Proportion presenting who are tested
+"beta", #Proportion cases that are positive, cen
+"beta", #Proportion presenting who are tested (decen)
+"beta", #Proportion cases that are positive, decent
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #transport
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #implementation
+"beta", #maintenance
+"beta", #cen error term
+"beta", #decen error term
+"beta", #decen prop. positive
+"beta", #cen prop. positive
+"beta" #cen ssm cost
+)
+#Assigns a distribution to each parameter. Note: common cost distributions are uniform, normal, triangular, and beta.
+
+#ALL UPDATED FOR INFLATION
+param.ranges[,"parameter1"]<-c(
+  250, #Number presenting for care
+  0.8862, #proportion presenting who are tested, cen 25% below
+  0.0412, #Proportion cases that are positive, 25% below PE
+  1, #proportion presenting who are tested, -5% of PE
+  0.0538, #Proportion cases that positive, decent, 25% below PE
+  11.67, #consumable cen
+  0.09, #staff cen
+  2289.68, #equipment cen
+  0.18, #building cen
+  0.01, #overhead cen
+  0.27, #transport cen
+  10.82, #consumable decen
+  0.19, #staff decen
+  3396.90, #equipment decen
+  0.02, #building decen
+  0.02, #overhead decen
+  736.03, #implementation decen
+  0.42, #maintenance decen
+  0.9, #cen error term
+  0.9, #decen error term
+  0.06203, #decen prop positive
+  0.05813, #cen prop positive
+  2.04 #cen ssm cost
+)
+param.ranges[,"parameter2"]<-c(
+  499, #Number presenting for care
+  0.9862, #proportion presenting who are tested, cen +5% of PE
+  0.0503, #Proportion cases that positive, cen, 
+  1, #proportion presenting who are tested, decen
+  0.0657, #Proportion cases that positive, decent, 25% above PE
+  12.53, #consumable cen
+  1.49, #staff cen
+  2289.68, #equipment cen
+  0.89, #building cen
+  0.04, #overhead cen
+  3.71, #transport cen
+  10.98, #consumable decen
+  0.83, #staff decen
+  3396.90, #equipment decen
+  0.06, #building decen
+  0.05, #overhead decen
+  736.03, #implementation decen
+  1.96, #maintenance decen
+  1.1, #cen error term
+  1.1, #decen error term
+  0.07581, #decen prop positive
+  0.07104, #cen prop positive
+  2.95 #cen ssm cost
+)
+param.ranges[,"parameter3"]<-c(
+  325, #Number presenting for care. WAS 413.7, to match avg from xpel
+  0.9362, #proportion presenting who are tested, cen
+  0.0457, #Proportion cases that are positive, cen
+  1, #proportion presenting who are tested, decen
+  0.0597, #Proportion cases that are positive, decent
+  12.05, #consumable cen
+  0.61, #staff cen
+  2289.68, #equipment cen
+  0.35, #building cen
+  0.01, #overhead cen
+  1.38, #transport cen
+  10.84, #consumable decen
+  0.51, #staff decen
+  3396.90, #equipment decen
+  0.03, #building decen
+  0.03, #overhead decen
+  736.03, #implementation decen
+  0.79, #maintenance decen
+  1, #cen error term
+  1, #decen error term
+  0.0689, #decen prop positive
+  0.0646, #cen prop positive
+  2.41 #cost ssm cen
+)
+#Parameter 1 is min, 2 is max, 3 is PE
+```
+
+
+```{r add the alpha and beta values}
+#Updated with inflation
+param.ranges[,"parameter1.name"]<-c( #The ALPHA value
+  4, #number presenting for care
+  4, #central proportion tested
+  4, #central proportion TB+
+  4, #decen proportion tested
+  4, #decentral proportion TB+
+  4, #central consumable costs
+  4, #central staff costs
+  4, #central equipment costs
+  4, #central building costs
+  4, #central overhead costs
+  4, #central transport costs
+  4, #decen consumable costs
+  4, #decen staff costs
+  4, #decen equipment costs
+  4, #decen building costs
+  4, #decen overhead costs
+  4, #decen implementation costs
+  4, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop positive
+  4, #cen prop positive
+  4 #cost ssm cen
+  )
+  
+param.ranges[,"parameter2.name"]<-c( #The BETA value
+  4, #total number tested
+  4, #central proportion tested
+  3.980434, #central proportion TB+
+  1, #decen proprtion tested
+  4, #decentral proportion TB+
+  4.798187, #central consumable costs
+  6.076922, #central staff costs
+  1, #central equipment costs
+  10.52941, #central building costs
+  88, #central overhead costs
+  7.2965603, #central transport costs
+  22, #decen consumable costs
+  4, #decen staff costs
+  1, #decen equipment costs
+  10, #decen building costs
+  7, #decen overhead costs
+  1, #decen implementation costs
+  10.48649, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop pos
+  4, #den prop pos
+  5.39 #cen ssm cost
+  )
+  
+param.ranges[,"parameter3.name"]<-c(#Non-centrality parameter, ask David/Hojoon what that is
+  0, #number presenting
+  0, #central proprtion tested
+  0, #central proportion TB+ and start 14 days
+  0, #decen proportion tested
+  0, #decentral proportion TB+ and start 14 days
+  0, #central consumable costs
+  0, #central staff costs
+  0, #central equipment costs
+  0, #central building costs
+  0, #central overhead costs
+  0, #central transport costs
+  0, #decen consumable costs
+  0, #decen staff costs
+  0, #decen equipment costs
+  0, #decen building costs
+  0, #decen overhead costs
+  0, #decen implementation costs
+  0, #decen maintenance costs
+  0, #cen error term
+  0, #decen error term
+  0, #decen prop pos
+  0, #cen prop pos
+  0 #cost ssm cen
+  )
+
+
+```
+
+```{r simulation prep, repetitions and matrix}
+#Define the number of simulations you intend to perform
+set.seed(269130)
+n.sims<-1000
+
+
+#Create a matrix to hold all of the sampled parameter values
+#Each row will represent 1 simulation; the columns in the row will correspond to the sampled parameter values for the row
+sampled.values<-matrix(nrow=n.sims,ncol=nrow(param.ranges))
+colnames(sampled.values)<-param.ranges[,"variable"]
+
+#Loop over the parameters (columns in sampled.values, rows in param.ranges) that will be sampled
+for(p in 1:ncol(sampled.values)){
+  
+  #check for the distribution that will be used
+  #check for a uniform distribution
+  if(param.ranges[p,"distribution"]=="uniform"){
+    
+    n.params<-runif( #sample from a uniform distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      min=param.ranges[p,"parameter1"], #define the lower bound parameter
+      max=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  #if not uniform, check if it is normal
+  if(param.ranges[p,"distribution"]=="normal"){
+    
+    n.params<-rnorm( #sample from a normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      mean=param.ranges[p,"parameter1"], #define the lower bound parameter
+      sd=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not uniform, check if it is lognormal
+  if(param.ranges[p,"distribution"]=="lognormal"){
+    
+    n.params<-rlnorm( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      meanlog=param.ranges[p,"parameter1"], #define the mean parameter
+      sdlog=param.ranges[p,"parameter2"] #define the standard deviation parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not lognormal, check if it is gamma
+  if(param.ranges[p,"distribution"]=="gamma"){
+    n.params<-rgamma( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape=param.ranges[p,"parameter1"], #define the k parameter
+      scale=param.ranges[p,"parameter2"] #define the theta parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not gamma, check if it is triangular
+  if(param.ranges[p,"distribution"]=="triangular"){
+    n.params<- rtriangle( #sample from a triangular distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      a = param.ranges[p,"parameter1"], #define the lower bound paramater/parameter input 1
+      b = param.ranges[p,"parameter2"], #define the upper bound parameter
+      c = param.ranges[p,"parameter3"] #define the mode/central tendency parameter
+    )
+  }
+  
+  #if not triangular, check if it is beta
+  if(param.ranges[p,"distribution"]=="beta"){
+    n.params<- rbeta( #sample from a beta distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape1 = param.ranges[p,"parameter1.name"], #define the alpha shape parameter
+      shape2 = param.ranges[p,"parameter2.name"], #define the beta shape parameter
+      ncp = param.ranges[p,"parameter3.name"] #define the non-centrality parameter (should be 0)
+    ) 
+    #(parameter1 + (p *(parameter2 - parameter1)))
+  }
+  sampled.values[,p]<-n.params #fill the column of the matrix with the vector of sampled values
+  
+  #go to the next column
+}
+
+```
+
+
+
+```{r calculate "true" simulated values}
+#Change variable names to match 99DOTS, no other changes
+num.presenting <- (sampled.values[,1] * (param.ranges[1,4] - param.ranges[1,3])) + param.ranges[1,3]
+
+cen.testedpro <- (sampled.values[,2] * (param.ranges[2,4] - param.ranges[2,3])) + param.ranges[2,3] #For central testing volume
+
+cen.14daypro <- (sampled.values[,3] * (param.ranges[3,4] - param.ranges[3,3])) + param.ranges[3,3] #For proportion of cases tested that are TB+
+
+decen.testedpro <- (sampled.values[,4] * (param.ranges[4,4] - param.ranges[4,3])) + param.ranges[4,3] #Decent testing volume
+
+decen.14daypro <- (sampled.values[,5] * (param.ranges[5,4] - param.ranges[5,3])) + param.ranges[5,3] #Proportion tested with TB, decentralized
+
+cen.consumable.cost <- (sampled.values[,6] * (param.ranges[6,4] - param.ranges[6,3])) + param.ranges[6,3] #Cen consumable cost
+
+cen.staff.cost <- (sampled.values[,7] * (param.ranges[7,4] - param.ranges[7,3])) + param.ranges[7,3] #Cen staff cost
+
+cen.equipment.cost <- (sampled.values[,8] * (param.ranges[8,4] - param.ranges[8,3])) + param.ranges[8,3] #Cen equipment cost
+
+cen.building.cost <- (sampled.values[,9] * (param.ranges[9,4] - param.ranges[9,3])) + param.ranges[9,3] #Cen building cost
+
+cen.overhead.cost <- (sampled.values[,10] * (param.ranges[10,4] - param.ranges[10,3])) + param.ranges[10,3] #Cen overhead cost, double check this one
+
+cen.transport.cost <- (sampled.values[,11] * (param.ranges[11,4] - param.ranges[11,3])) + param.ranges[11,3] #Cen transport cost
+
+decen.consumable.cost <- (sampled.values[,12] * (param.ranges[12,4] - param.ranges[12,3])) + param.ranges[12,3] #Decen consumable cost
+
+decen.staff.cost <- (sampled.values[,13] * (param.ranges[13,4] - param.ranges[13,3])) + param.ranges[13,3] #Decen staff cost
+
+decen.equipment.cost <- (sampled.values[,14] * (param.ranges[14,4] - param.ranges[14,3])) + param.ranges[14,3] #Decen equipment cost
+
+decen.building.cost <- (sampled.values[,15] * (param.ranges[15,4] - param.ranges[15,3])) + param.ranges[15,3] #Decen building cost
+
+decen.overhead.cost <- (sampled.values[,16] * (param.ranges[16,4] - param.ranges[16,3])) + param.ranges[16,3] #Decen overhead cost
+
+decen.impl.cost <- (sampled.values[,17] * (param.ranges[17,4] - param.ranges[17,3])) + param.ranges[17,3] #Decen implementation cost
+
+decen.main.cost <- (sampled.values[,18] * (param.ranges[18,4] - param.ranges[18,3])) + param.ranges[18,3] #Decen maintenance costs
+
+cen.error.term <- (sampled.values[,19] * (param.ranges[19,4] - param.ranges[19,3])) + param.ranges[19,3] #Cen error term
+
+decen.error.term <- (sampled.values[,20] * (param.ranges[20,4] - param.ranges[20,3])) + param.ranges[20,3] #
+
+decen.propositive <- (sampled.values[,21] * (param.ranges[21,4] - param.ranges[21,3])) + param.ranges[21,3] #
+
+cen.propositive <- (sampled.values[,22] * (param.ranges[22,4] - param.ranges[22,3])) + param.ranges[22,3] #
+
+cen.ssm.cost <- (sampled.values[,23] * (param.ranges[23,4] - param.ranges[23,3])) + param.ranges[23,3] #cen ssm cost
+
+#Change to reflect 99DOTS values
+sampled.values.true <- cbind(num.presenting,
+                           cen.testedpro,
+                           cen.14daypro,
+                           decen.testedpro,
+                           decen.14daypro,
+                           cen.consumable.cost,
+                           cen.staff.cost,
+                           cen.equipment.cost,
+                           cen.building.cost,
+                           cen.overhead.cost,
+                           cen.transport.cost,
+                           decen.consumable.cost,
+                           decen.staff.cost,
+                           decen.equipment.cost,
+                           decen.building.cost,
+                           decen.overhead.cost,
+                           decen.impl.cost,
+                           decen.main.cost,
+                           cen.error.term,
+                           decen.error.term,
+                           decen.propositive,
+                           cen.propositive,
+                           cen.ssm.cost
+                           )
+
+```                        
+
+```{R Run the Simulations}
+#NO CHANGES
+#Perform your simulations using a combination of apply() and do.call()
+#apply() will iteratively perform the same function to each row and/or column of a matrix argument
+#The matrix of sampled input values will serve as our matrix argument X
+#We will set MARGIN=1 to indicate that we want to iterate over the rows (not columns) of the matrix
+#We will create a custom function to apply over each row (r)
+#The key of the custom function is do.call() 
+#do.call() calls a function of your choice and passes user-defined arguments to it
+#we will use it to call our previously-defined function treatment.sim()
+#We will supply it our row of sampled input values as user-defined arguments
+#arguments for do.call() must be in the form of a list: as.list(r)
+#apply() returns the outputs of each iteration as a column of a matrix
+#for ease of use, we will transpose - t() - the matrix so that each iteration will be returned as a row
+
+sim.out2<-t(apply(X=sampled.values.true,MARGIN=1, FUN=function(r) do.call(what=treatment.sim, args=as.list(r)) ))
+#for each row of sampled.values, run function r which is our treatment.sim formula.
+sim.out.df2 <- as.data.frame(sim.out2)
+
+
+
+#Becase treatment.sim() returns a vector of 4 results ("Scenario1.Cure","Scenario1.Cost","Scenario2.Cure","Scenario2.Cost")
+#sim.out contains 4 columns, each corresponding to one of the outputs of treatment.sim()
+#The first row of sim.out corresponds to the results of the simulation created by the first row of sampled input values in sampled.value
+```
+
+######################################################################################################### 500 - 749 ################################
+##########################################################################
+
+```{r set-up the parameter values}
+param.ranges<-data.frame("variable"=character(23),
+                         "distribution"=character(23),
+                         "parameter1"=numeric(23),
+                         "parameter2"=numeric(23),
+                         "parameter3"=numeric(23),
+                         "parameter1.name"=numeric(23), 
+                         "parameter2.name"=numeric(23),
+                         "parameter3.name"=numeric(23))
+
+param.ranges[,"variable"]<-c(
+"num.presenting",
+"cen.testedpro",
+"cen.14daypro",
+"decen.testedpro",
+"decen.14daypro",
+"cen.consumable.cost",
+"cen.staff.cost",
+"cen.equipment.cost",
+"cen.building.cost",
+"cen.overhead.cost",
+"cen.transport.cost", 
+"decen.consumable.cost",
+"decen.staff.cost",
+"decen.equipment.cost",
+"decen.building.cost",
+"decen.overhead.cost", 
+"decen.impl.cost",
+"decen.main.cost",
+"cen.error.term",
+"decen.error.term",
+"decen.propositive",
+"cen.propositive",
+"cen.ssm.cost"
+)
+#Assigns a name to each of the above 18 variables in the param.ranges data frame.
+
+param.ranges[,"distribution"]<-c(
+"beta", #Number presenting for care
+"beta", #Proportion presenting who are tested
+"beta", #Proportion cases that are positive, cen
+"beta", #Proportion presenting who are tested (decen)
+"beta", #Proportion cases that are positive, decent
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #transport
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #implementation
+"beta", #maintenance
+"beta", #cen error term
+"beta", #decen error term
+"beta", #decen prop. positive
+"beta", #cen prop. positive
+"beta" #cen ssm cost
+)
+#Assigns a distribution to each parameter. Note: common cost distributions are uniform, normal, triangular, and beta.
+
+#ALL UPDATED FOR INFLATION
+param.ranges[,"parameter1"]<-c(
+  500, #Number presenting for care
+  0.8862, #proportion presenting who are tested, cen 25% below
+  0.0412, #Proportion cases that are positive, 25% below PE
+  1, #proportion presenting who are tested, -5% of PE
+  0.0538, #Proportion cases that positive, decent, 25% below PE
+  11.67, #consumable cen
+  0.09, #staff cen
+  2289.68, #equipment cen
+  0.18, #building cen
+  0.01, #overhead cen
+  0.27, #transport cen
+  10.82, #consumable decen
+  0.19, #staff decen
+  3396.90, #equipment decen
+  0.02, #building decen
+  0.02, #overhead decen
+  736.03, #implementation decen
+  0.42, #maintenance decen
+  0.9, #cen error term
+  0.9, #decen error term
+  0.06203, #decen prop positive
+  0.05813, #cen prop positive
+  2.04 #cen ssm cost
+)
+param.ranges[,"parameter2"]<-c(
+  749, #Number presenting for care
+  0.9862, #proportion presenting who are tested, cen +5% of PE
+  0.0503, #Proportion cases that positive, cen, 
+  1, #proportion presenting who are tested, decen
+  0.0657, #Proportion cases that positive, decent, 25% above PE
+  12.53, #consumable cen
+  1.49, #staff cen
+  2289.68, #equipment cen
+  0.89, #building cen
+  0.04, #overhead cen
+  3.71, #transport cen
+  10.98, #consumable decen
+  0.83, #staff decen
+  3396.90, #equipment decen
+  0.06, #building decen
+  0.05, #overhead decen
+  736.03, #implementation decen
+  1.96, #maintenance decen
+  1.1, #cen error term
+  1.1, #decen error term
+  0.07581, #decen prop positive
+  0.07104, #cen prop positive
+  2.95 #cen ssm cost
+)
+param.ranges[,"parameter3"]<-c(
+  625, #Number presenting for care
+  0.9362, #proportion presenting who are tested, cen
+  0.0457, #Proportion cases that are positive, cen
+  1, #proportion presenting who are tested, decen
+  0.0597, #Proportion cases that are positive, decent
+  12.05, #consumable cen
+  0.61, #staff cen
+  2289.68, #equipment cen
+  0.35, #building cen
+  0.01, #overhead cen
+  1.38, #transport cen
+  10.84, #consumable decen
+  0.51, #staff decen
+  3396.90, #equipment decen
+  0.03, #building decen
+  0.03, #overhead decen
+  736.03, #implementation decen
+  0.79, #maintenance decen
+  1, #cen error term
+  1, #decen error term
+  0.0689, #decen prop positive
+  0.0646, #cen prop positive
+  2.41 #cen ssm cost
+)
+#Parameter 1 is min, 2 is max, 3 is PE
+```
+
+
+```{r add the alpha and beta values}
+#Updated with inflation
+param.ranges[,"parameter1.name"]<-c( #The ALPHA value
+  4, #number presenting for care
+  4, #central proportion tested
+  4, #central proportion TB+
+  4, #decen proportion tested
+  4, #decentral proportion TB+
+  4, #central consumable costs
+  4, #central staff costs
+  4, #central equipment costs
+  4, #central building costs
+  4, #central overhead costs
+  4, #central transport costs
+  4, #decen consumable costs
+  4, #decen staff costs
+  4, #decen equipment costs
+  4, #decen building costs
+  4, #decen overhead costs
+  4, #decen implementation costs
+  4, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop positive
+  4, #cen prop positive
+  4 #cen cost ssm
+  )
+  
+param.ranges[,"parameter2.name"]<-c( #The BETA value
+  4, #total number tested
+  4, #central proportion tested
+  3.980434, #central proportion TB+
+  1, #decen proprtion tested
+  4, #decentral proportion TB+
+  4.798187, #central consumable costs
+  6.076922, #central staff costs
+  1, #central equipment costs
+  10.52941, #central building costs
+  88, #central overhead costs
+  7.2965603, #central transport costs
+  22, #decen consumable costs
+  4, #decen staff costs
+  1, #decen equipment costs
+  10, #decen building costs
+  7, #decen overhead costs
+  1, #decen implementation costs
+  10.48649, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop pos
+  4, #den prop pos
+  5.39 #cen cost ssm
+  )
+  
+param.ranges[,"parameter3.name"]<-c(#Non-centrality parameter, ask David/Hojoon what that is
+  0, #number presenting
+  0, #central proprtion tested
+  0, #central proportion TB+ and start 14 days
+  0, #decen proportion tested
+  0, #decentral proportion TB+ and start 14 days
+  0, #central consumable costs
+  0, #central staff costs
+  0, #central equipment costs
+  0, #central building costs
+  0, #central overhead costs
+  0, #central transport costs
+  0, #decen consumable costs
+  0, #decen staff costs
+  0, #decen equipment costs
+  0, #decen building costs
+  0, #decen overhead costs
+  0, #decen implementation costs
+  0, #decen maintenance costs
+  0, #cen error term
+  0, #decen error term
+  0, #decen prop pos
+  0, #cen prop pos
+  0 #cen cost ssm
+  )
+
+
+```
+
+```{r simulation prep, repetitions and matrix}
+#Define the number of simulations you intend to perform
+set.seed(269130)
+n.sims<-1000
+
+
+#Create a matrix to hold all of the sampled parameter values
+#Each row will represent 1 simulation; the columns in the row will correspond to the sampled parameter values for the row
+sampled.values<-matrix(nrow=n.sims,ncol=nrow(param.ranges))
+colnames(sampled.values)<-param.ranges[,"variable"]
+
+#Loop over the parameters (columns in sampled.values, rows in param.ranges) that will be sampled
+for(p in 1:ncol(sampled.values)){
+  
+  #check for the distribution that will be used
+  #check for a uniform distribution
+  if(param.ranges[p,"distribution"]=="uniform"){
+    
+    n.params<-runif( #sample from a uniform distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      min=param.ranges[p,"parameter1"], #define the lower bound parameter
+      max=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  #if not uniform, check if it is normal
+  if(param.ranges[p,"distribution"]=="normal"){
+    
+    n.params<-rnorm( #sample from a normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      mean=param.ranges[p,"parameter1"], #define the lower bound parameter
+      sd=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not uniform, check if it is lognormal
+  if(param.ranges[p,"distribution"]=="lognormal"){
+    
+    n.params<-rlnorm( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      meanlog=param.ranges[p,"parameter1"], #define the mean parameter
+      sdlog=param.ranges[p,"parameter2"] #define the standard deviation parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not lognormal, check if it is gamma
+  if(param.ranges[p,"distribution"]=="gamma"){
+    n.params<-rgamma( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape=param.ranges[p,"parameter1"], #define the k parameter
+      scale=param.ranges[p,"parameter2"] #define the theta parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not gamma, check if it is triangular
+  if(param.ranges[p,"distribution"]=="triangular"){
+    n.params<- rtriangle( #sample from a triangular distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      a = param.ranges[p,"parameter1"], #define the lower bound paramater/parameter input 1
+      b = param.ranges[p,"parameter2"], #define the upper bound parameter
+      c = param.ranges[p,"parameter3"] #define the mode/central tendency parameter
+    )
+  }
+  
+  #if not triangular, check if it is beta
+  if(param.ranges[p,"distribution"]=="beta"){
+    n.params<- rbeta( #sample from a beta distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape1 = param.ranges[p,"parameter1.name"], #define the alpha shape parameter
+      shape2 = param.ranges[p,"parameter2.name"], #define the beta shape parameter
+      ncp = param.ranges[p,"parameter3.name"] #define the non-centrality parameter (should be 0)
+    ) 
+    #(parameter1 + (p *(parameter2 - parameter1)))
+  }
+  sampled.values[,p]<-n.params #fill the column of the matrix with the vector of sampled values
+  
+  #go to the next column
+}
+
+```
+
+
+
+```{r calculate "true" simulated values}
+#Change variable names to match 99DOTS, no other changes
+num.presenting <- (sampled.values[,1] * (param.ranges[1,4] - param.ranges[1,3])) + param.ranges[1,3]
+
+cen.testedpro <- (sampled.values[,2] * (param.ranges[2,4] - param.ranges[2,3])) + param.ranges[2,3] #For central testing volume
+
+cen.14daypro <- (sampled.values[,3] * (param.ranges[3,4] - param.ranges[3,3])) + param.ranges[3,3] #For proportion of cases tested that are TB+
+
+decen.testedpro <- (sampled.values[,4] * (param.ranges[4,4] - param.ranges[4,3])) + param.ranges[4,3] #Decent testing volume
+
+decen.14daypro <- (sampled.values[,5] * (param.ranges[5,4] - param.ranges[5,3])) + param.ranges[5,3] #Proportion tested with TB, decentralized
+
+cen.consumable.cost <- (sampled.values[,6] * (param.ranges[6,4] - param.ranges[6,3])) + param.ranges[6,3] #Cen consumable cost
+
+cen.staff.cost <- (sampled.values[,7] * (param.ranges[7,4] - param.ranges[7,3])) + param.ranges[7,3] #Cen staff cost
+
+cen.equipment.cost <- (sampled.values[,8] * (param.ranges[8,4] - param.ranges[8,3])) + param.ranges[8,3] #Cen equipment cost
+
+cen.building.cost <- (sampled.values[,9] * (param.ranges[9,4] - param.ranges[9,3])) + param.ranges[9,3] #Cen building cost
+
+cen.overhead.cost <- (sampled.values[,10] * (param.ranges[10,4] - param.ranges[10,3])) + param.ranges[10,3] #Cen overhead cost, double check this one
+
+cen.transport.cost <- (sampled.values[,11] * (param.ranges[11,4] - param.ranges[11,3])) + param.ranges[11,3] #Cen transport cost
+
+decen.consumable.cost <- (sampled.values[,12] * (param.ranges[12,4] - param.ranges[12,3])) + param.ranges[12,3] #Decen consumable cost
+
+decen.staff.cost <- (sampled.values[,13] * (param.ranges[13,4] - param.ranges[13,3])) + param.ranges[13,3] #Decen staff cost
+
+decen.equipment.cost <- (sampled.values[,14] * (param.ranges[14,4] - param.ranges[14,3])) + param.ranges[14,3] #Decen equipment cost
+
+decen.building.cost <- (sampled.values[,15] * (param.ranges[15,4] - param.ranges[15,3])) + param.ranges[15,3] #Decen building cost
+
+decen.overhead.cost <- (sampled.values[,16] * (param.ranges[16,4] - param.ranges[16,3])) + param.ranges[16,3] #Decen overhead cost
+
+decen.impl.cost <- (sampled.values[,17] * (param.ranges[17,4] - param.ranges[17,3])) + param.ranges[17,3] #Decen implementation cost
+
+decen.main.cost <- (sampled.values[,18] * (param.ranges[18,4] - param.ranges[18,3])) + param.ranges[18,3] #Decen maintenance costs
+
+cen.error.term <- (sampled.values[,19] * (param.ranges[19,4] - param.ranges[19,3])) + param.ranges[19,3] #Cen error term
+
+decen.error.term <- (sampled.values[,20] * (param.ranges[20,4] - param.ranges[20,3])) + param.ranges[20,3] #
+
+decen.propositive <- (sampled.values[,21] * (param.ranges[21,4] - param.ranges[21,3])) + param.ranges[21,3] #
+
+cen.propositive <- (sampled.values[,22] * (param.ranges[22,4] - param.ranges[22,3])) + param.ranges[22,3] #
+
+cen.ssm.cost <- (sampled.values[,23] * (param.ranges[23,4] - param.ranges[23,3])) + param.ranges[23,3] #cen ssm cost
+
+#Change to reflect 99DOTS values
+sampled.values.true <- cbind(num.presenting,
+                           cen.testedpro,
+                           cen.14daypro,
+                           decen.testedpro,
+                           decen.14daypro,
+                           cen.consumable.cost,
+                           cen.staff.cost,
+                           cen.equipment.cost,
+                           cen.building.cost,
+                           cen.overhead.cost,
+                           cen.transport.cost,
+                           decen.consumable.cost,
+                           decen.staff.cost,
+                           decen.equipment.cost,
+                           decen.building.cost,
+                           decen.overhead.cost,
+                           decen.impl.cost,
+                           decen.main.cost,
+                           cen.error.term,
+                           decen.error.term,
+                           decen.propositive,
+                           cen.propositive,
+                           cen.ssm.cost
+                           )
+                             
+```
+
+```{R Run the Simulations}
+#NO CHANGES
+#Perform your simulations using a combination of apply() and do.call()
+#apply() will iteratively perform the same function to each row and/or column of a matrix argument
+#The matrix of sampled input values will serve as our matrix argument X
+#We will set MARGIN=1 to indicate that we want to iterate over the rows (not columns) of the matrix
+#We will create a custom function to apply over each row (r)
+#The key of the custom function is do.call() 
+#do.call() calls a function of your choice and passes user-defined arguments to it
+#we will use it to call our previously-defined function treatment.sim()
+#We will supply it our row of sampled input values as user-defined arguments
+#arguments for do.call() must be in the form of a list: as.list(r)
+#apply() returns the outputs of each iteration as a column of a matrix
+#for ease of use, we will transpose - t() - the matrix so that each iteration will be returned as a row
+
+sim.out3<-t(apply(X=sampled.values.true,MARGIN=1, FUN=function(r) do.call(what=treatment.sim, args=as.list(r)) ))
+#for each row of sampled.values, run function r which is our treatment.sim formula.
+sim.out.df3 <- as.data.frame(sim.out3)
+
+
+
+#Becase treatment.sim() returns a vector of 4 results ("Scenario1.Cure","Scenario1.Cost","Scenario2.Cure","Scenario2.Cost")
+#sim.out contains 4 columns, each corresponding to one of the outputs of treatment.sim()
+#The first row of sim.out corresponds to the results of the simulation created by the first row of sampled input values in sampled.value
+```
+
+######################################################################################### 750 - 1000 ###########################
+################################################################
+
+```{r set-up the parameter values}
+param.ranges<-data.frame("variable"=character(23),
+                         "distribution"=character(23),
+                         "parameter1"=numeric(23),
+                         "parameter2"=numeric(23),
+                         "parameter3"=numeric(23),
+                         "parameter1.name"=numeric(23), 
+                         "parameter2.name"=numeric(23),
+                         "parameter3.name"=numeric(23))
+
+param.ranges[,"variable"]<-c(
+"num.presenting",
+"cen.testedpro",
+"cen.14daypro",
+"decen.testedpro",
+"decen.14daypro",
+"cen.consumable.cost",
+"cen.staff.cost",
+"cen.equipment.cost",
+"cen.building.cost",
+"cen.overhead.cost",
+"cen.transport.cost", 
+"decen.consumable.cost",
+"decen.staff.cost",
+"decen.equipment.cost",
+"decen.building.cost",
+"decen.overhead.cost", 
+"decen.impl.cost",
+"decen.main.cost",
+"cen.error.term",
+"decen.error.term",
+"decen.propositive",
+"cen.propositive",
+"cen.ssm.cost"
+)
+#Assigns a name to each of the above 18 variables in the param.ranges data frame.
+
+param.ranges[,"distribution"]<-c(
+"beta", #Number presenting for care
+"beta", #Proportion presenting who are tested
+"beta", #Proportion cases that are positive, cen
+"beta", #Proportion presenting who are tested (decen)
+"beta", #Proportion cases that are positive, decent
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #transport
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #implementation
+"beta", #maintenance
+"beta", #cen error term
+"beta", #decen error term
+"beta", #decen prop. positive
+"beta", #cen prop. positive
+"beta" # cen cost ssm
+)
+#Assigns a distribution to each parameter. Note: common cost distributions are uniform, normal, triangular, and beta.
+
+#ALL UPDATED FOR INFLATION
+param.ranges[,"parameter1"]<-c(
+  750, #Number presenting for care
+  0.8862, #proportion presenting who are tested, cen 25% below
+  0.0412, #Proportion cases that are positive, 25% below PE
+  1, #proportion presenting who are tested, -5% of PE
+  0.0538, #Proportion cases that positive, decent, 25% below PE
+  11.67, #consumable cen
+  0.09, #staff cen
+  2289.68, #equipment cen
+  0.18, #building cen
+  0.01, #overhead cen
+  0.27, #transport cen
+  10.82, #consumable decen
+  0.19, #staff decen
+  3396.90, #equipment decen
+  0.02, #building decen
+  0.02, #overhead decen
+  736.03, #implementation decen
+  0.42, #maintenance decen
+  0.9, #cen error term
+  0.9, #decen error term
+  0.06203, #decen prop positive
+  0.05813, #cen prop positive
+  2.04 #cen cost ssm
+)
+param.ranges[,"parameter2"]<-c(
+  1000, #Number presenting for care
+  0.9862, #proportion presenting who are tested, cen +5% of PE
+  0.0503, #Proportion cases that positive, cen, 
+  1, #proportion presenting who are tested, decen
+  0.0657, #Proportion cases that positive, decent, 25% above PE
+  12.53, #consumable cen
+  1.49, #staff cen
+  2289.68, #equipment cen
+  0.89, #building cen
+  0.04, #overhead cen
+  3.71, #transport cen
+  10.98, #consumable decen
+  0.83, #staff decen
+  3396.90, #equipment decen
+  0.06, #building decen
+  0.05, #overhead decen
+  736.03, #implementation decen
+  1.96, #maintenance decen
+  1.1, #cen error term
+  1.1, #decen error term
+  0.07581, #decen prop positive
+  0.07104, #cen prop positive
+  2.95 #cen cost ssm
+)
+param.ranges[,"parameter3"]<-c(
+  875, #Number presenting for care
+  0.9362, #proportion presenting who are tested, cen
+  0.0457, #Proportion cases that are positive, cen
+  1, #proportion presenting who are tested, decen
+  0.0597, #Proportion cases that are positive, decent
+  12.05, #consumable cen
+  0.61, #staff cen
+  2289.68, #equipment cen
+  0.35, #building cen
+  0.01, #overhead cen
+  1.38, #transport cen
+  10.84, #consumable decen
+  0.51, #staff decen
+  3396.90, #equipment decen
+  0.03, #building decen
+  0.03, #overhead decen
+  736.03, #implementation decen
+  0.79, #maintenance decen
+  1, #cen error term
+  1, #decen error term
+  0.0689, #decen prop positive
+  0.0646, #cen prop positive
+  2.41 #cen ssm cost
+)
+#Parameter 1 is min, 2 is max, 3 is PE
+```
+
+
+```{r add the alpha and beta values}
+#Updated with inflation
+param.ranges[,"parameter1.name"]<-c( #The ALPHA value
+  4, #number presenting for care
+  4, #central proportion tested
+  4, #central proportion TB+
+  4, #decen proportion tested
+  4, #decentral proportion TB+
+  4, #central consumable costs
+  4, #central staff costs
+  4, #central equipment costs
+  4, #central building costs
+  4, #central overhead costs
+  4, #central transport costs
+  4, #decen consumable costs
+  4, #decen staff costs
+  4, #decen equipment costs
+  4, #decen building costs
+  4, #decen overhead costs
+  4, #decen implementation costs
+  4, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop positive
+  4, #cen prop positive
+  4 #cen ssm cost
+  )
+  
+param.ranges[,"parameter2.name"]<-c( #The BETA value
+  4, #total number tested
+  4, #central proportion tested
+  3.980434, #central proportion TB+
+  1, #decen proprtion tested
+  4, #decentral proportion TB+
+  4.798187, #central consumable costs
+  6.076922, #central staff costs
+  1, #central equipment costs
+  10.52941, #central building costs
+  88, #central overhead costs
+  7.2965603, #central transport costs
+  22, #decen consumable costs
+  4, #decen staff costs
+  1, #decen equipment costs
+  10, #decen building costs
+  7, #decen overhead costs
+  1, #decen implementation costs
+  10.48649, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop pos
+  4, #den prop pos
+  5.39 #cen ssm cost
+  )
+  
+param.ranges[,"parameter3.name"]<-c(#Non-centrality parameter, ask David/Hojoon what that is
+  0, #number presenting
+  0, #central proprtion tested
+  0, #central proportion TB+ and start 14 days
+  0, #decen proportion tested
+  0, #decentral proportion TB+ and start 14 days
+  0, #central consumable costs
+  0, #central staff costs
+  0, #central equipment costs
+  0, #central building costs
+  0, #central overhead costs
+  0, #central transport costs
+  0, #decen consumable costs
+  0, #decen staff costs
+  0, #decen equipment costs
+  0, #decen building costs
+  0, #decen overhead costs
+  0, #decen implementation costs
+  0, #decen maintenance costs
+  0, #cen error term
+  0, #decen error term
+  0, #decen prop pos
+  0, #cen prop pos
+  0 #cen ssm cost
+  )
+
+
+```
+
+```{r simulation prep, repetitions and matrix}
+#Define the number of simulations you intend to perform
+set.seed(269130)
+n.sims<-1000
+
+
+#Create a matrix to hold all of the sampled parameter values
+#Each row will represent 1 simulation; the columns in the row will correspond to the sampled parameter values for the row
+sampled.values<-matrix(nrow=n.sims,ncol=nrow(param.ranges))
+colnames(sampled.values)<-param.ranges[,"variable"]
+
+#Loop over the parameters (columns in sampled.values, rows in param.ranges) that will be sampled
+for(p in 1:ncol(sampled.values)){
+  
+  #check for the distribution that will be used
+  #check for a uniform distribution
+  if(param.ranges[p,"distribution"]=="uniform"){
+    
+    n.params<-runif( #sample from a uniform distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      min=param.ranges[p,"parameter1"], #define the lower bound parameter
+      max=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  #if not uniform, check if it is normal
+  if(param.ranges[p,"distribution"]=="normal"){
+    
+    n.params<-rnorm( #sample from a normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      mean=param.ranges[p,"parameter1"], #define the lower bound parameter
+      sd=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not uniform, check if it is lognormal
+  if(param.ranges[p,"distribution"]=="lognormal"){
+    
+    n.params<-rlnorm( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      meanlog=param.ranges[p,"parameter1"], #define the mean parameter
+      sdlog=param.ranges[p,"parameter2"] #define the standard deviation parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not lognormal, check if it is gamma
+  if(param.ranges[p,"distribution"]=="gamma"){
+    n.params<-rgamma( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape=param.ranges[p,"parameter1"], #define the k parameter
+      scale=param.ranges[p,"parameter2"] #define the theta parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not gamma, check if it is triangular
+  if(param.ranges[p,"distribution"]=="triangular"){
+    n.params<- rtriangle( #sample from a triangular distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      a = param.ranges[p,"parameter1"], #define the lower bound paramater/parameter input 1
+      b = param.ranges[p,"parameter2"], #define the upper bound parameter
+      c = param.ranges[p,"parameter3"] #define the mode/central tendency parameter
+    )
+  }
+  
+  #if not triangular, check if it is beta
+  if(param.ranges[p,"distribution"]=="beta"){
+    n.params<- rbeta( #sample from a beta distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape1 = param.ranges[p,"parameter1.name"], #define the alpha shape parameter
+      shape2 = param.ranges[p,"parameter2.name"], #define the beta shape parameter
+      ncp = param.ranges[p,"parameter3.name"] #define the non-centrality parameter (should be 0)
+    ) 
+    #(parameter1 + (p *(parameter2 - parameter1)))
+  }
+  sampled.values[,p]<-n.params #fill the column of the matrix with the vector of sampled values
+  
+  #go to the next column
+}
+
+```
+
+
+
+```{r calculate "true" simulated values}
+#Change variable names to match 99DOTS, no other changes
+num.presenting <- (sampled.values[,1] * (param.ranges[1,4] - param.ranges[1,3])) + param.ranges[1,3]
+
+cen.testedpro <- (sampled.values[,2] * (param.ranges[2,4] - param.ranges[2,3])) + param.ranges[2,3] #For central testing volume
+
+cen.14daypro <- (sampled.values[,3] * (param.ranges[3,4] - param.ranges[3,3])) + param.ranges[3,3] #For proportion of cases tested that are TB+
+
+decen.testedpro <- (sampled.values[,4] * (param.ranges[4,4] - param.ranges[4,3])) + param.ranges[4,3] #Decent testing volume
+
+decen.14daypro <- (sampled.values[,5] * (param.ranges[5,4] - param.ranges[5,3])) + param.ranges[5,3] #Proportion tested with TB, decentralized
+
+cen.consumable.cost <- (sampled.values[,6] * (param.ranges[6,4] - param.ranges[6,3])) + param.ranges[6,3] #Cen consumable cost
+
+cen.staff.cost <- (sampled.values[,7] * (param.ranges[7,4] - param.ranges[7,3])) + param.ranges[7,3] #Cen staff cost
+
+cen.equipment.cost <- (sampled.values[,8] * (param.ranges[8,4] - param.ranges[8,3])) + param.ranges[8,3] #Cen equipment cost
+
+cen.building.cost <- (sampled.values[,9] * (param.ranges[9,4] - param.ranges[9,3])) + param.ranges[9,3] #Cen building cost
+
+cen.overhead.cost <- (sampled.values[,10] * (param.ranges[10,4] - param.ranges[10,3])) + param.ranges[10,3] #Cen overhead cost, double check this one
+
+cen.transport.cost <- (sampled.values[,11] * (param.ranges[11,4] - param.ranges[11,3])) + param.ranges[11,3] #Cen transport cost
+
+decen.consumable.cost <- (sampled.values[,12] * (param.ranges[12,4] - param.ranges[12,3])) + param.ranges[12,3] #Decen consumable cost
+
+decen.staff.cost <- (sampled.values[,13] * (param.ranges[13,4] - param.ranges[13,3])) + param.ranges[13,3] #Decen staff cost
+
+decen.equipment.cost <- (sampled.values[,14] * (param.ranges[14,4] - param.ranges[14,3])) + param.ranges[14,3] #Decen equipment cost
+
+decen.building.cost <- (sampled.values[,15] * (param.ranges[15,4] - param.ranges[15,3])) + param.ranges[15,3] #Decen building cost
+
+decen.overhead.cost <- (sampled.values[,16] * (param.ranges[16,4] - param.ranges[16,3])) + param.ranges[16,3] #Decen overhead cost
+
+decen.impl.cost <- (sampled.values[,17] * (param.ranges[17,4] - param.ranges[17,3])) + param.ranges[17,3] #Decen implementation cost
+
+decen.main.cost <- (sampled.values[,18] * (param.ranges[18,4] - param.ranges[18,3])) + param.ranges[18,3] #Decen maintenance costs
+
+cen.error.term <- (sampled.values[,19] * (param.ranges[19,4] - param.ranges[19,3])) + param.ranges[19,3] #Cen error term
+
+decen.error.term <- (sampled.values[,20] * (param.ranges[20,4] - param.ranges[20,3])) + param.ranges[20,3] #
+
+decen.propositive <- (sampled.values[,21] * (param.ranges[21,4] - param.ranges[21,3])) + param.ranges[21,3] #
+
+cen.propositive <- (sampled.values[,22] * (param.ranges[22,4] - param.ranges[22,3])) + param.ranges[22,3] #
+
+cen.ssm.cost <- (sampled.values[,23] * (param.ranges[23,4] - param.ranges[23,3])) + param.ranges[23,3] #cen ssm cost
+
+#Change to reflect 99DOTS values
+sampled.values.true <- cbind(num.presenting,
+                           cen.testedpro,
+                           cen.14daypro,
+                           decen.testedpro,
+                           decen.14daypro,
+                           cen.consumable.cost,
+                           cen.staff.cost,
+                           cen.equipment.cost,
+                           cen.building.cost,
+                           cen.overhead.cost,
+                           cen.transport.cost,
+                           decen.consumable.cost,
+                           decen.staff.cost,
+                           decen.equipment.cost,
+                           decen.building.cost,
+                           decen.overhead.cost,
+                           decen.impl.cost,
+                           decen.main.cost,
+                           cen.error.term,
+                           decen.error.term,
+                           decen.propositive,
+                           cen.propositive,
+                           cen.ssm.cost
+                           )
+
+```
+
+```{R Run the Simulations}
+#NO CHANGES
+#Perform your simulations using a combination of apply() and do.call()
+#apply() will iteratively perform the same function to each row and/or column of a matrix argument
+#The matrix of sampled input values will serve as our matrix argument X
+#We will set MARGIN=1 to indicate that we want to iterate over the rows (not columns) of the matrix
+#We will create a custom function to apply over each row (r)
+#The key of the custom function is do.call() 
+#do.call() calls a function of your choice and passes user-defined arguments to it
+#we will use it to call our previously-defined function treatment.sim()
+#We will supply it our row of sampled input values as user-defined arguments
+#arguments for do.call() must be in the form of a list: as.list(r)
+#apply() returns the outputs of each iteration as a column of a matrix
+#for ease of use, we will transpose - t() - the matrix so that each iteration will be returned as a row
+
+sim.out4<-t(apply(X=sampled.values.true,MARGIN=1, FUN=function(r) do.call(what=treatment.sim, args=as.list(r)) ))
+#for each row of sampled.values, run function r which is our treatment.sim formula.
+sim.out.df4 <- as.data.frame(sim.out4)
+
+
+
+#Becase treatment.sim() returns a vector of 4 results ("Scenario1.Cure","Scenario1.Cost","Scenario2.Cure","Scenario2.Cost")
+#sim.out contains 4 columns, each corresponding to one of the outputs of treatment.sim()
+#The first row of sim.out corresponds to the results of the simulation created by the first row of sampled input values in sampled.value
+```
+
+```{r prep for combining + random sample w/ replacement}
+#must create simulation before running:
+sim.out.df1 <- sim.out.df1 %>% 
+  mutate(cen.clinic.cost = (`Cen Per Pt costs w/ error` * `Cen number tested`), 
+  decen.clinic.cost = (`Decen Per Pt costs w/ error` * `Decen number tested`), 
+  incr.cost.combo = (decen.clinic.cost - cen.clinic.cost),
+  incr.effect.combo = (`Decen 1ary outcome` - `Cen 1ary outcome`),
+  cen.clinic.tested = (`Cen number tested` * `Cen Proportion Pos`),
+  decen.clinic.tested = (`Decen number tested` * `Decen Proportion Pos`),
+  incr.effect.diagnose = (decen.clinic.tested - cen.clinic.tested)
+  )
+
+sim.out.df2 <- sim.out.df2 %>% 
+  mutate(cen.clinic.cost = (`Cen Per Pt costs w/ error` * `Cen number tested`), 
+  decen.clinic.cost = (`Decen Per Pt costs w/ error` * `Decen number tested`), 
+  incr.cost.combo = (decen.clinic.cost - cen.clinic.cost),
+  incr.effect.combo = (`Decen 1ary outcome` - `Cen 1ary outcome`),
+  cen.clinic.tested = (`Cen number tested` * `Cen Proportion Pos`),
+  decen.clinic.tested = (`Decen number tested` * `Decen Proportion Pos`),
+  incr.effect.diagnose = (decen.clinic.tested - cen.clinic.tested)
+  )
+
+sim.out.df3 <- sim.out.df3 %>% 
+  mutate(cen.clinic.cost = (`Cen Per Pt costs w/ error` * `Cen number tested`), 
+  decen.clinic.cost = (`Decen Per Pt costs w/ error` * `Decen number tested`), 
+  incr.cost.combo = (decen.clinic.cost - cen.clinic.cost),
+  incr.effect.combo = (`Decen 1ary outcome` - `Cen 1ary outcome`),
+  cen.clinic.tested = (`Cen number tested` * `Cen Proportion Pos`),
+  decen.clinic.tested = (`Decen number tested` * `Decen Proportion Pos`),
+  incr.effect.diagnose = (decen.clinic.tested - cen.clinic.tested)
+  )
+
+sim.out.df4 <- sim.out.df4 %>% 
+  mutate(cen.clinic.cost = (`Cen Per Pt costs w/ error` * `Cen number tested`), 
+  decen.clinic.cost = (`Decen Per Pt costs w/ error` * `Decen number tested`), 
+  incr.cost.combo = (decen.clinic.cost - cen.clinic.cost),
+  incr.effect.combo = (`Decen 1ary outcome` - `Cen 1ary outcome`),
+  cen.clinic.tested = (`Cen number tested` * `Cen Proportion Pos`),
+  decen.clinic.tested = (`Decen number tested` * `Decen Proportion Pos`),
+  incr.effect.diagnose = (decen.clinic.tested - cen.clinic.tested)
+  )
+
+simulation <- sim.out.df1[1,] %>% mutate(iteration=1)
+```
+
+###################################################################
+############################# Overall #############################
+###################################################################
+
+
+```{r Combine all the groups via random sample}
+#Run 1000 simulations with random sampling from each of our different clinic sizes, based on the desired number of clinics to attain our virtual sample size.
+repeat{
+  test.small <- sample_n(sim.out.df1, 16, replace = TRUE) #1500
+test.med <- sample_n(sim.out.df2, 2, replace = TRUE) #4137
+test.large <- sample_n(sim.out.df3, 2, replace = TRUE) #6255
+test.xlarge <- sample_n(sim.out.df4, 1, replace = TRUE) #8755
+#sample_n is used instead of sample because it pulls the entire row (the entire clinic) for each estimate. This is from dplyr. 
+#Was 16, 6, 4, 3
+#Now, 1 region hosp, 2 hospitals, 2 HCIV, 16 HCIII
+
+test <- rbind(test.small, test.med, test.large, test.xlarge)
+test <- test %>% mutate(iteration = 1)
+test1 <- collap(test, ~iteration ,FUN = fsum)
+#Collap() is from the Collapse package, tells us the data to use, the variable to collapse by, and the summary statistic(s) we want. Here, just sum, but can make a list and find multiple
+
+
+simulation <- rbind(simulation, test1)
+
+if(nrow(simulation) > 1000) {
+  break
+}
+}
+
+simulation <- simulation[2:1001,]
+```
+
+
+```{r ICER values, overall}
+#Change columns to match sim.out.df in 99DOTS
+ICERall<-matrix(ncol=3,nrow=nrow(simulation))
+colnames(ICERall)<-c("Incremental Effectiveness","Incremental Cost", "Ratio")
+
+ICERall[,1]<-simulation[,64] #99DOTS effectivenss - no DOTS total effectiveness. NOT over 5000 patients, for aggregate we instead are doing it over the total cost/effectiveness of clinics together.
+ICERall[,2]<-simulation[,63] #99DOTS total cost - no DOTS total costs. Same here, TOTAL cost, not cost for 5k patients.
+ICERall[,3]<-ICERall[,2]/ICERall[,1] #have to calculate ICER from aggregate sums above, rather than pull the ICER value from simulation, because in simulation ICER is the sum of ICERs from all clinics in each simulation
+
+ICERall.df <- data.frame(ICERall)
+mean(ICERall.df$Incremental.Effectiveness)
+mean(ICERall.df$Incremental.Cost)
+mean(ICERall.df$Ratio)
+median(ICERall.df$Ratio)
+quantile(ICERall.df[,3],0.025)
+quantile(ICERall.df[,3],0.975)
+check <- ICERall.df %>% filter(Ratio > 400)
+```
+
+```{r Plot}
+#Change labels
+dataEllipse(ICERall[,1],ICERall[,2],
+     xlab="Incremental Patients Initiated on Trtmt w/in 14 Days",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+```{r CE Acceptability Curve}
+acceptable<- c( ICERall[which(ICERall[,2]>=0 & ICERall[,1]>=0),"Ratio"],
+                rep(0,length(which(ICERall[,2]<=0 & ICERall[,1]>=0))),
+                rep(Inf,length(which( ICERall[,1]<=0)))
+                
+)
+
+
+#Change labels
+plot(ecdf( acceptable ),
+     xlim=c(0,2000), #quantile(acceptable[acceptable!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional Case Initiated on Treatment)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+
+```
+```{r Probability Values}
+under500 <- ICERall.df %>% filter(Ratio <= 500)
+under1000 <- ICERall.df %>% filter(Ratio <= 1000)
+#median(acceptable) = 1074
+under1250 <- ICERall.df %>% filter(Ratio <= 1250)
+under1500 <- ICERall.df %>% filter(Ratio <= 1500)
+under2000 <- ICERall.df %>% filter(Ratio <= 2000)
+under2500 <- ICERall.df %>% filter(Ratio <= 2500)
+under3000 <- ICERall.df %>% filter(Ratio <= 3000)
+
+
+```
+
+################################################################################################ Graphs ##############################
+###################################################################
+
+1 - 299
+```{r ICER values}
+#Change columns to match sim.out.df in 99DOTS
+ICER1<-matrix(ncol=3,nrow=nrow(sim.out.df1))
+colnames(ICER1)<-c("Incremental Effectiveness","Incremental Cost", "Ratio")
+
+ICER1[,1]<-sim.out.df1[,47] #99DOTS effectivenss - no DOTS total effectiveness
+ICER1[,2]<-sim.out.df1[,46] #99DOTS total cost - no DOTS total costs
+ICER1[,3]<-ICER1[,2]/ICER1[,1] #No change
+# ICER1.clean<- ICER1[1:275,]
+# ICER1a.clean<- ICER1[277:1000,]
+# ICER1 <- rbind(ICER1.clean, ICER1a.clean)
+ICER1.df <- data.frame(ICER1)
+mean(ICER1.df$Incremental.Effectiveness)
+mean(ICER1.df$Incremental.Cost)
+mean(ICER1.df$Ratio)
+median(ICER1.df$Ratio)
+mean(sim.out.df1$`Cen Total costs w/ error`)
+mean(sim.out.df1$`Decen Total costs w/ error`)
+mean(sim.out.df1$`Decen Per Pt costs w/ error`)
+mean(sim.out.df1$`Cen Per Pt costs w/ error`)
+mean(sim.out.df1$`Old per patient cost`)
+mean(sim.out.df1$`SSM Cost per Patient`)
+mean(sim.out.df1$`Xpert Cost per Patient`)
+mean(sim.out.df1$`Cost SSM Cen`)
+mean(sim.out.df1$`Old per patient cost, no ssm`)
+mean(sim.out.df1$`Number presenting for care`)
+```
+
+
+```{r Plot}
+#Change labels
+dataEllipse(ICER1[,1],ICER1[,2],
+     xlab="Incremental Patients Initiated on Trtmt w/in 14 Days",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+```{r CE Acceptability Curve}
+acceptable1<- c( ICER1[which(ICER1[,2]>=0 & ICER1[,1]>=0),"Ratio"],
+                rep(0,length(which(ICER1[,2]<=0 & ICER1[,1]>=0))),
+                rep(Inf,length(which( ICER1[,1]<=0)))
+                
+)
+
+
+#Change labels
+plot(ecdf( acceptable1 ),
+     xlim=c(0,quantile(acceptable1[acceptable1!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional Case Initiated on Treatment)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+```
+
+
+250 - 499
+```{r ICER values}
+#Change columns to match sim.out.df in 99DOTS
+ICER2<-matrix(ncol=3,nrow=nrow(sim.out.df2))
+colnames(ICER2)<-c("Incremental Effectiveness","Incremental Cost", "Ratio")
+
+ICER2[,1]<-sim.out.df2[,47] #99DOTS effectivenss - no DOTS total effectiveness
+ICER2[,2]<-sim.out.df2[,46] #99DOTS total cost - no DOTS total costs
+ICER2[,3]<-ICER2[,2]/ICER2[,1] #No change
+ICER2.df <- data.frame(ICER2)
+mean(ICER2.df$Incremental.Effectiveness)
+mean(ICER2.df$Incremental.Cost)
+mean(ICER2.df$Ratio)
+median(ICER2.df$Ratio)
+mean(sim.out.df2$`Cen Total costs w/ error`)
+mean(sim.out.df2$`Decen Total costs w/ error`)
+mean(sim.out.df2$`Decen Per Pt costs w/ error`)
+mean(sim.out.df2$`Cen Per Pt costs w/ error`)
+mean(sim.out.df2$`Old per patient cost`)
+mean(sim.out.df2$`SSM Cost per Patient`)
+mean(sim.out.df2$`Xpert Cost per Patient`)
+mean(sim.out.df2$`Cost SSM Cen`)
+mean(sim.out.df2$`Old per patient cost, no ssm`)
+mean(sim.out.df2$`Number presenting for care`)
+```
+
+
+```{r Plot}
+#Change labels
+dataEllipse(ICER2[,1],ICER2[,2],
+     xlab="Incremental Patients Initiated on Trtmt w/in 14 Days",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+```{r CE Acceptability Curve}
+acceptable2<- c( ICER2[which(ICER2[,2]>=0 & ICER2[,1]>=0),"Ratio"],
+                rep(0,length(which(ICER2[,2]<=0 & ICER2[,1]>=0))),
+                rep(Inf,length(which( ICER2[,1]<=0)))
+                
+)
+
+
+#Change labels
+plot(ecdf( acceptable2 ),
+     xlim=c(0,quantile(acceptable2[acceptable2!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional Case Initiated on Treatment)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+```
+
+500-749
+```{r ICER values}
+#Change columns to match sim.out.df in 99DOTS
+ICER3<-matrix(ncol=3,nrow=nrow(sim.out.df3))
+colnames(ICER3)<-c("Incremental Effectiveness","Incremental Cost", "Ratio")
+
+ICER3[,1]<-sim.out.df3[,47] #99DOTS effectivenss - no DOTS total effectiveness
+ICER3[,2]<-sim.out.df3[,46] #99DOTS total cost - no DOTS total costs
+ICER3[,3]<-ICER3[,2]/ICER3[,1] #No change
+
+ICER3.df <- data.frame(ICER3)
+mean(ICER3.df$Incremental.Effectiveness)
+mean(ICER3.df$Incremental.Cost)
+mean(ICER3.df$Ratio)
+median(ICER3.df$Ratio)
+mean(sim.out.df3$`Cen Total costs w/ error`)
+mean(sim.out.df3$`Decen Total costs w/ error`)
+mean(sim.out.df3$`Decen Per Pt costs w/ error`)
+mean(sim.out.df3$`Cen Per Pt costs w/ error`)
+mean(sim.out.df3$`Old per patient cost`)
+mean(sim.out.df3$`SSM Cost per Patient`)
+mean(sim.out.df3$`Xpert Cost per Patient`)
+mean(sim.out.df3$`Cost SSM Cen`)
+mean(sim.out.df3$`Old per patient cost, no ssm`)
+mean(sim.out.df3$`Number presenting for care`)
+```
+
+
+```{r Plot}
+#Change labels
+dataEllipse(ICER3[,1],ICER3[,2],
+     xlab="Incremental Patients Initiated on Trtmt w/in 14 Days",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+```{r CE Acceptability Curve}
+acceptable3<- c( ICER3[which(ICER3[,2]>=0 & ICER3[,1]>=0),"Ratio"],
+                rep(0,length(which(ICER3[,2]<=0 & ICER3[,1]>=0))),
+                rep(Inf,length(which( ICER3[,1]<=0)))
+                
+)
+
+
+#Change labels
+plot(ecdf( acceptable3 ),
+     xlim=c(0,quantile(acceptable3[acceptable3!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional Case Initiated on Treatment)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+```
+
+751-1000
+```{r ICER values}
+#Change columns to match sim.out.df in 99DOTS
+ICER4<-matrix(ncol=3,nrow=nrow(sim.out.df4))
+colnames(ICER4)<-c("Incremental Effectiveness","Incremental Cost", "Ratio")
+
+ICER4[,1]<-sim.out.df4[,47] #99DOTS effectivenss - no DOTS total effectiveness
+ICER4[,2]<-sim.out.df4[,46] #99DOTS total cost - no DOTS total costs
+ICER4[,3]<-ICER4[,2]/ICER4[,1] #No change
+
+ICER4.df <- data.frame(ICER4)
+mean(ICER4.df$Incremental.Effectiveness)
+mean(ICER4.df$Incremental.Cost)
+mean(ICER4.df$Ratio)
+median(ICER4.df$Ratio)
+mean(sim.out.df4$`Cen Total costs w/ error`)
+mean(sim.out.df4$`Decen Total costs w/ error`)
+mean(sim.out.df4$`Decen Per Pt costs w/ error`)
+mean(sim.out.df4$`Cen Per Pt costs w/ error`)
+mean(sim.out.df4$`Old per patient cost`)
+mean(sim.out.df4$`SSM Cost per Patient`)
+mean(sim.out.df4$`Xpert Cost per Patient`)
+mean(sim.out.df4$`Cost SSM Cen`)
+mean(sim.out.df4$`Old per patient cost, no ssm`)
+mean(sim.out.df4$`Number presenting for care`)
+```
+
+
+```{r Plot}
+
+dataEllipse(ICER4[,1],ICER4[,2],
+     xlab="Incremental Patients Initiated on Trtmt w/in 14 Days",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+```{r CE Acceptability Curve}
+acceptable4<- c( ICER4[which(ICER4[,2]>=0 & ICER4[,1]>=0),"Ratio"],
+                rep(0,length(which(ICER4[,2]<=0 & ICER4[,1]>=0))),
+                rep(Inf,length(which( ICER4[,1]<=0)))
+                
+)
+
+
+#Change labels
+plot(ecdf( acceptable4 ),
+     xlim=c(0,quantile(acceptable4[acceptable4!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional Case Initiated on Treatment)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+```
+
+```{r proportion at different WTP}
+under100 <- sim.out.df %>% filter(ICER <= 100)
+under200 <- sim.out.df %>% filter(ICER <= 200)
+under300 <- sim.out.df %>% filter(ICER <= 300)
+under400 <- sim.out.df %>% filter(ICER <= 400)
+under500 <- sim.out.df %>% filter(ICER <= 500)
+under600 <- sim.out.df %>% filter(ICER <= 600)
+under700 <- sim.out.df %>% filter(ICER <= 700)
+under800 <- sim.out.df %>% filter(ICER <= 800)
+```
+
+```{r boxplot}
+boxplot1 <- ICER1.df %>% 
+  select(ICER = Ratio) %>%
+  mutate(sv = "1 - 249")
+
+boxplot2 <- ICER2.df %>% 
+  select(ICER = Ratio) %>%
+  mutate(sv = "250 - 499")
+
+boxplot3 <- ICER3.df %>% 
+  select(ICER = Ratio) %>%
+  mutate(sv = "500 - 749")
+
+boxplot4 <- ICER4.df %>% 
+  select(ICER = Ratio) %>%
+  mutate(sv = "750 - 1000")
+
+boxplotall <- ICERall.df %>%
+  select(ICER = Ratio) %>%
+  mutate(sv = "District")
+
+boxplot <- rbind(boxplot1, boxplot2, boxplot3, boxplot4, boxplotall)
+
+boxplot(ICER ~ sv, 
+        data = boxplot, 
+        main = "ICER Value by Service Volume", 
+        xlab = "Annual Number of Patients", 
+        ylab = "ICER", 
+        col = "steelblue", 
+        border = "black", 
+        outline = FALSE) 
+#range = 0.0001 to remove arms
+
+```
+
+######################################################################################### Per Diagnosis Figures ###################### ###################################################################
+Overall
+```{r ICER values, overall}
+#Change columns to match sim.out.df in 99DOTS
+ICERalldx<-matrix(ncol=3,nrow=nrow(simulation))
+colnames(ICERalldx)<-c("Incremental Effectiveness","Incremental Cost", "Ratio")
+
+ICERalldx[,1]<-simulation[,67] #99DOTS effectivenss - no DOTS total effectiveness. NOT over 5000 patients, for aggregate we instead are doing it over the total cost/effectiveness of clinics together.
+ICERalldx[,2]<-simulation[,63] #99DOTS total cost - no DOTS total costs. Same here, TOTAL cost, not cost for 5k patients.
+ICERalldx[,3]<-ICERalldx[,2]/ICERalldx[,1] #have to calculate ICER from aggregate sums above, rather than pull the ICER value from simulation, because in simulation ICER is the sum of ICERs from all clinics in each simulation
+
+ICERalldx.df <- data.frame(ICERalldx)
+mean(ICERalldx.df$Incremental.Effectiveness)
+mean(ICERalldx.df$Incremental.Cost)
+mean(ICERalldx.df$Ratio)
+median(ICERalldx.df$Ratio)
+quantile(ICERalldx.df[,3],0.025)
+quantile(ICERalldx.df[,3],0.975)
+```
+
+```{r Plot}
+#Change labels
+dataEllipse(ICERalldx[,1],ICERalldx[,2],
+     xlab="Incremental Number of TB Diagnoses",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+```{r CE Acceptability Curve}
+acceptabledx<- c( ICERalldx[which(ICERalldx[,2]>=0 & ICERalldx[,1]>=0),"Ratio"],
+                rep(0,length(which(ICERalldx[,2]<=0 & ICERalldx[,1]>=0))),
+                rep(Inf,length(which( ICERalldx[,1]<=0)))
+                
+)
+
+
+#Change labels
+plot(ecdf( acceptabledx ),
+     xlim=c(0, 6000),#quantile(acceptabledx[acceptabledx!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional Tuberculosis Case Detected)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+```
+
+```{r Probability Values}
+under500dx <- ICERalldx.df %>% filter(Ratio <= 500)
+under1000dx <- ICERalldx.df %>% filter(Ratio <= 1000)
+under1500dx <- ICERalldx.df %>% filter(Ratio <= 1500)
+under2000dx <- ICERalldx.df %>% filter(Ratio <= 2000)
+under2500dx <- ICERalldx.df %>% filter(Ratio <= 2500)
+under3000dx <- ICERalldx.df %>% filter(Ratio <= 3000)
+under4000dx <- ICERalldx.df %>% filter(Ratio <= 4000)
+under5000dx <- ICERalldx.df %>% filter(Ratio <= 5000)
+under6000dx <- ICERalldx.df %>% filter(Ratio <= 6000)
+
+
+```
+
+
+1-299
+```{r ICER values}
+ICERdx1<- sim.out.df1 %>%
+  select(`Incr # Tested`, `Incr Total Cost`, `ICER Dx`)
+colnames(ICERdx1)<-c("Dx Incremental Effectiveness","Dx Incremental Cost", "Dx Ratio")
+
+# ICERdx1.df <- data.frame(ICERdx1)
+# ICERdx1.df <- ICERdx1.df %>% mutate(dxicer = (Dx.Incremental.Cost / Dx.Incremental.Effectiveness))
+# ICERdx1.df <- drop(ICERdx1.df$Dx.Ratio)
+
+ICERdx1.df <- data.frame(ICERdx1)
+
+mean(ICERdx1.df$Dx.Incremental.Effectiveness)
+mean(ICERdx1.df$Dx.Incremental.Cost)
+mean(ICERdx1.df$Dx.Ratio)
+median(ICERdx1.df$Dx.Ratio)
+
+```
+
+```{r Plot}
+dataEllipse(ICERdx1[,1],ICERdx1[,2],
+     xlab="Incremental Positive Dx",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+
+```{r CE Acceptability Curve}
+acceptdx1 <- ICERdx1 %>%
+  filter(ICERdx1[,2]>=0 & ICERdx1[,1]>=0)
+
+acceptdx1 <- acceptdx1 %>%
+  select(`Dx Ratio`)
+
+acceptdx1a <- ICERdx1 %>%
+  filter(ICERdx1[,2]<=0 & ICERdx1[,1]>=0) %>%
+  mutate("Dx Ratio" = 0) %>%
+  select(`Dx Ratio`)
+
+acceptdxinf1 <- ICERdx1 %>%
+  filter(ICERdx1[,1]<=0) %>%
+  mutate("Dx Ratio" = Inf) %>%
+  select(`Dx Ratio`)
+
+acceptabledx1 <- rbind(acceptdx1, acceptdx1a, acceptdxinf1)
+
+acceptabledx1 <- data.matrix(acceptabledx1)
+
+plot(ecdf(acceptabledx1),
+     xlim=c(0,quantile(acceptabledx1[acceptabledx1!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional TB Case Detected)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+
+```
+
+
+300-500
+```{r ICER values}
+ICERdx2<- sim.out.df2 %>%
+  select(`Incr # Tested`, `Incr Total Cost`, `ICER Dx`)
+colnames(ICERdx2)<-c("Dx Incremental Effectiveness","Dx Incremental Cost", "Dx Ratio")
+
+ICERdx2.df <- data.frame(ICERdx2)
+mean(ICERdx2.df$Dx.Incremental.Effectiveness)
+mean(ICERdx2.df$Dx.Incremental.Cost)
+mean(ICERdx2.df$Dx.Ratio)
+median(ICERdx2.df$Dx.Ratio)
+
+```
+
+```{r Plot}
+dataEllipse(ICERdx2[,1],ICERdx2[,2],
+     xlab="Incremental Positive Dx",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+
+```{r CE Acceptability Curve}
+acceptdx2 <- ICERdx2 %>%
+  filter(ICERdx2[,2]>=0 & ICERdx2[,1]>=0) %>%
+  select(`Dx Ratio`)
+
+acceptdx2a <- ICERdx2 %>%
+  filter(ICERdx2[,2]<=0 & ICERdx2[,1]>=0) %>%
+  mutate("Dx Ratio" = 0) %>%
+  select(`Dx Ratio`)
+
+acceptdxinf2 <- ICERdx2 %>%
+  filter(ICERdx2[,1]<=0) %>%
+  mutate("Dx Ratio" = Inf) %>%
+  select(`Dx Ratio`)
+
+acceptabledx2 <- rbind(acceptdx2, acceptdx2a, acceptdxinf2)
+
+acceptabledx2 <- data.matrix(acceptabledx2)
+
+plot(ecdf(acceptabledx2),
+     xlim=c(0,quantile(acceptabledx2[acceptabledx2!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional TB Case Detected)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+
+```
+
+
+501-750
+```{r ICER values}
+ICERdx3<- sim.out.df3 %>%
+  select(`Incr # Tested`, `Incr Total Cost`, `ICER Dx`)
+colnames(ICERdx3)<-c("Dx Incremental Effectiveness","Dx Incremental Cost", "Dx Ratio")
+
+ICERdx3.df <- data.frame(ICERdx3)
+mean(ICERdx3.df$Dx.Incremental.Effectiveness)
+mean(ICERdx3.df$Dx.Incremental.Cost)
+mean(ICERdx3.df$Dx.Ratio)
+median(ICERdx3.df$Dx.Ratio)
+
+```
+
+```{r Plot}
+dataEllipse(ICERdx3[,1],ICERdx3[,2],
+     xlab="Incremental Positive Dx",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+
+```{r CE Acceptability Curve}
+acceptdx3 <- ICERdx3 %>%
+  filter(ICERdx3[,2]>=0 & ICERdx3[,1]>=0) %>%
+  select(`Dx Ratio`)
+
+acceptdx3a <- ICERdx3 %>%
+  filter(ICERdx3[,2]<=0 & ICERdx3[,1]>=0) %>%
+  mutate("Dx Ratio" = 0) %>%
+  select(`Dx Ratio`)
+
+acceptdxinf3 <- ICERdx3 %>%
+  filter(ICERdx3[,1]<=0) %>%
+  mutate("Dx Ratio" = Inf) %>%
+  select(`Dx Ratio`)
+
+acceptabledx3 <- rbind(acceptdx3, acceptdx3a, acceptdxinf3)
+
+acceptabledx3 <- data.matrix(acceptabledx3)
+
+plot(ecdf(acceptabledx3),
+     xlim=c(0,quantile(acceptabledx3[acceptabledx3!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional TB Case Detected)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+
+```
+
+
+751-1000
+```{r ICER values}
+ICERdx4<- sim.out.df4 %>%
+  select(`Incr # Tested`, `Incr Total Cost`, `ICER Dx`)
+colnames(ICERdx4)<-c("Dx Incremental Effectiveness","Dx Incremental Cost", "Dx Ratio")
+
+ICERdx4.df <- data.frame(ICERdx4)
+mean(ICERdx4.df$Dx.Incremental.Effectiveness)
+mean(ICERdx4.df$Dx.Incremental.Cost)
+mean(ICERdx4.df$Dx.Ratio)
+median(ICERdx4.df$Dx.Ratio)
+
+```
+
+```{r Plot}
+dataEllipse(ICERdx4[,1],ICERdx4[,2],
+     xlab="Incremental Positive Dx",
+     ylab="Incremental Total Costs ($)",
+     main="Incremental Cost-Effectiveness",
+     pch=16,xaxs="i",yaxs="i",
+     levels = 0.95,
+     col=c("azure4", "blue"))
+abline(h=0,lty=2)
+abline(v=0,lty=2)
+
+```
+
+
+```{r CE Acceptability Curve}
+acceptdx4 <- ICERdx4 %>%
+  filter(ICERdx4[,2]>=0 & ICERdx4[,1]>=0) %>%
+  select(`Dx Ratio`)
+
+acceptdx4a <- ICERdx4 %>%
+  filter(ICERdx4[,2]<=0 & ICERdx4[,1]>=0) %>%
+  mutate("Dx Ratio" = 0) %>%
+  select(`Dx Ratio`)
+
+acceptdxinf4 <- ICERdx4 %>%
+  filter(ICERdx4[,1]<=0) %>%
+  mutate("Dx Ratio" = Inf) %>%
+  select(`Dx Ratio`)
+
+acceptabledx4 <- rbind(acceptdx4, acceptdx4a, acceptdxinf4)
+
+acceptabledx4 <- data.matrix(acceptabledx4)
+
+plot(ecdf(acceptabledx4),
+     xlim=c(0,quantile(acceptabledx4[acceptabledx4!=Inf],probs=0.99)),
+     ylim=c(0,1),
+     xlab="Willingness to Pay Threshold\n(per Additional TB Case Detected)",
+     ylab="Probability of being\nCost-Effective",
+     main="Cost-Effectiveness Acceptability Curve",
+     xaxs="i",yaxs="i",
+     col="black"
+)
+
+```
+
+
+
+```{r boxplot, diagnosis}
+boxplotdx1 <- ICERdx1.df %>% 
+  select(ICER = Dx.Ratio) %>%
+  mutate(sv = "1 - 249")
+
+boxplotdx2 <- ICERdx2.df %>% 
+  select(ICER = Dx.Ratio) %>%
+  mutate(sv = "250 - 499")
+
+boxplotdx3 <- ICERdx3.df %>% 
+  select(ICER = Dx.Ratio) %>%
+  mutate(sv = "500 - 749")
+
+boxplotdx4 <- ICERdx4.df %>% 
+  select(ICER = Dx.Ratio) %>%
+  mutate(sv = "750 - 1000")
+
+boxplotalldx <- ICERalldx.df %>%
+  select(ICER = Ratio) %>%
+  mutate(sv = "District")
+
+boxplotdx <- rbind(boxplotdx2, boxplotdx3, boxplotdx4, boxplotalldx)
+
+boxplot(ICER ~ sv, 
+        data = boxplotdx, 
+        main = "ICER Value by Service Volume", 
+        xlab = "Annual Number of Patients", 
+        ylab = "ICER", 
+        col = "steelblue", 
+        border = "black", 
+        outline = FALSE) 
+#range = 0.0001 to remove arms
+
+```
+
+
+####################################################################################################### Scatter Plot ############################### ##########################################################################
+
+```{r scatter plot of service volumes}
+#Treatment Initiation
+ICERscatter <- rbind(sim.out.df1, sim.out.df2, sim.out.df3, sim.out.df4)
+
+ICERscatter <- ICERscatter %>% filter(`ICER` < 9000)
+
+ggplot(ICERscatter, aes(x = `Number presenting for care`, y = `ICER`)) + geom_point(shape = 18, color = "#009E73") + geom_smooth(method = "loess", level = 0.95, color = "#56B4E9") + theme_bw() +theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size = 16), axis.text = element_text(size = 16)) + scale_y_continuous(breaks = seq(0, 7000, 1000)) + labs(x = "Annual Number of Suspected Tuberculosis Patients Presenting for Care, Per Clinic", y = "Cost per Additional Patient Initiating Treatment within 14 Days (2019 USD)")
+
+```
+
+
+```{r scatter plot of service volumes}
+ICERscatterdx <- rbind(sim.out.df1, sim.out.df2, sim.out.df3, sim.out.df4)
+
+ICERscatterdx <- ICERscatter %>% filter(`ICER Dx` < 9000 & `ICER Dx` > -2000)
+
+ggplot(ICERscatterdx, aes(x = `Number presenting for care`, y = `ICER Dx`)) + geom_point(shape = 18, color = "#009E73") + geom_smooth(method = "loess", level = 0.95, color = "#56B4E9") + theme_bw() +theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size = 16), axis.text = element_text(size = 16)) + scale_y_continuous(breaks = seq(0, 9000, 1000)) + labs(x = "Annual Number of Suspected Tuberculosis Patients Presenting for Care, Per Clinic", y = "Cost per Additional Tuberculosis Case Detected (2019 USD)")
+
+
+```
+
+
+####################################################################################################### Miscellaneous ############################## ##########################################################################
+
+```{r Calculate our beta distribution values}
+#First calculate the Y value (mode) based on a desired peak/PE, X
+yvalue <- function(x, min, max) {
+  y <- ((x-min)/(max-min))
+  return(y)
+}
+#Where y = mode of the distribution
+
+betavalue <- function(a, y){
+  beta <- ((a - 1)/y) - a + 2
+  return(beta)
+}
+#This function gives us our Beta value for each parameter based on our desired mode
+
+#UPDATED WITH INFLATION
+
+#For total number tested
+#yvalue(4137, 3000, 5000) #0.4444
+#betavalue(4, 0.5685) #3.277
+
+#For proprtion tested, centralized arm
+#yvalue(1, 0.995, 1) #0.5
+#betavalue(4, 1) #4
+
+#Central proportion TB+
+#yvalue(0.0457, 0.0342, 0.057125) #0.5016358
+#betavalue(4, 0.5016358) #3.980434
+
+#For proprtion tested, decentralized arm
+#yvalue(0.9362, 0.8862, 0.9862) #0.5
+#betavalue(4, 0.5) #4
+
+#Decen proportion TB+
+#yvalue(0.0602, 0.04515, 0.07525) #0.5
+#betavalue(4, 0.5) #4
+
+#Central Consumable Costs
+yvalue(12.05,11.67,12.53)
+betavalue(4, 0.4412941) #4.89
+
+#Central Staff Costs
+#yvalue(0.61, 0.09, 1.49) #0.3717
+#betavalue(4, 0.3714286) #6.076922
+
+#Central Equipment Costs
+#yvalue(5565.24,5496.87,5666.82)
+#betavalue(4, 0.4023) #5.457
+
+#Central Building Costs
+#yvalue(0.35, 0.18,0.89)
+#betavalue(4,0.2394366) #10.52941
+
+#Central Overhead Costs
+#yvalue(0.011,0.01, 0.04)
+#betavalue(4,0.03333333) #88
+
+#Central transport cost
+#yvalue(1.66, 1.25, 2.08)
+#betavalue(4, 0.5) #4
+
+#Decen consumable costs
+#yvalue(10.84,10.82,10.98)
+#betavalue(4, 0.125) #22
+
+#Decen staff costs
+#yvalue(0.51,0.19,0.83)
+#betavalue(4, 0.5)
+
+#Decen equipment costs
+#yvalue(6.79, 5.23, 11.20)
+#betavalue(4, 0.2613065)
+
+#Decen building costs
+#yvalue(0.03,0.02,0.06)
+#betavalue(4,0.25) #10
+
+#Decen overhead cost
+#yvalue(0.03, 0.02, 0.05)
+#betavalue(4, 0.3333333) #7
+
+#Decen implementation cost
+#yvalue(1.47, 1.13, 2.43)
+#betavalue(4, 0.2615385) #9.470587
+
+#Decen maintenance cost
+#yvalue(0.79, 0.42, 1.96)
+#betavalue(4, 0.2402597) #10.48649
+
+```
+
+
+
+MAKING THE CONTINUOUS GRAPHS
+(DECEMBER 2021)
+
+```{r set-up the parameter values}
+param.ranges<-data.frame("variable"=character(23),
+                         "distribution"=character(23),
+                         "parameter1"=numeric(23),
+                         "parameter2"=numeric(23),
+                         "parameter3"=numeric(23),
+                         "parameter1.name"=numeric(23), 
+                         "parameter2.name"=numeric(23),
+                         "parameter3.name"=numeric(23))
+
+param.ranges[,"variable"]<-c(
+"num.presenting",
+"cen.testedpro",
+"cen.14daypro",
+"decen.testedpro",
+"decen.14daypro",
+"cen.consumable.cost",
+"cen.staff.cost",
+"cen.equipment.cost",
+"cen.building.cost",
+"cen.overhead.cost",
+"cen.transport.cost", 
+"decen.consumable.cost",
+"decen.staff.cost",
+"decen.equipment.cost",
+"decen.building.cost",
+"decen.overhead.cost", 
+"decen.impl.cost",
+"decen.main.cost",
+"cen.error.term",
+"decen.error.term",
+"decen.propositive",
+"cen.propositive",
+"cen.ssm.cost"
+)
+#Assigns a name to each of the above 18 variables in the param.ranges data frame.
+
+param.ranges[,"distribution"]<-c(
+"beta", #Number presenting for care
+"beta", #Proportion presenting who are tested
+"beta", #Proportion cases that are positive, cen
+"beta", #Proportion presenting who are tested (decen)
+"beta", #Proportion cases that are positive, decent
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #transport
+"beta", #consumable
+"beta", #staff
+"beta", #equipment
+"beta", #building
+"beta", #overhead
+"beta", #implementation
+"beta", #maintenance
+"beta", #cen error term
+"beta", #decen error term
+"beta", #decen prop. positive
+"beta", #cen prop. positive
+"beta" #cen ssm
+)
+#Assigns a distribution to each parameter. Note: common cost distributions are uniform, normal, triangular, and beta.
+
+#ALL UPDATED FOR INFLATION
+param.ranges[,"parameter1"]<-c(
+  1, #Number presenting for care
+  0.8862, #proportion presenting who are tested, cen 25% below
+  0.0412, #Proportion cases that are positive, 25% below PE
+  1, #proportion presenting who are tested, -5% of PE
+  0.0538, #Proportion cases that positive, decent, 25% below PE
+  11.67, #consumable cen
+  0.09, #staff cen
+  2289.68, #equipment cen
+  0.18, #building cen
+  0.01, #overhead cen
+  0.27, #transport cen
+  10.82, #consumable decen
+  0.19, #staff decen
+  3396.90, #equipment decen
+  0.02, #building decen
+  0.02, #overhead decen
+  736.03, #implementation decen
+  0.42, #maintenance decen
+  0.9, #cen error term
+  0.9, #decen error term
+  0.06203, #decen prop positive
+  0.05813, #cen prop positive
+  2.04 #cen ssm cost
+)
+param.ranges[,"parameter2"]<-c(
+  1000, #Number presenting for care
+  0.9862, #proportion presenting who are tested, cen +5% of PE
+  0.0503, #Proportion cases that positive, cen, 
+  1, #proportion presenting who are tested, decen
+  0.0657, #Proportion cases that positive, decent, 25% above PE
+  12.53, #consumable cen
+  1.49, #staff cen
+  2289.68, #equipment cen
+  0.89, #building cen
+  0.04, #overhead cen
+  3.71, #transport cen
+  10.98, #consumable decen
+  0.83, #staff decen
+  3396.90, #equipment decen
+  0.06, #building decen
+  0.05, #overhead decen
+  736.03, #implementation decen
+  1.96, #maintenance decen
+  1.1, #cen error term
+  1.1, #decen error term
+  0.07581, #decen prop positive
+  0.07104, #cen prop positive
+  2.95 #cen ssm cost
+)
+param.ranges[,"parameter3"]<-c(
+  500, #Number presenting for care
+  0.9362, #proportion presenting who are tested, cen
+  0.0457, #Proportion cases that are positive, cen
+  1, #proportion presenting who are tested, decen
+  0.0597, #Proportion cases that are positive, decent
+  12.05, #consumable cen
+  0.61, #staff cen
+  2289.68, #equipment cen
+  0.35, #building cen
+  0.01, #overhead cen
+  1.38, #transport cen
+  10.84, #consumable decen
+  0.51, #staff decen
+  3396.90, #equipment decen
+  0.03, #building decen
+  0.03, #overhead decen
+  736.03, #implementation decen
+  0.79, #maintenance decen
+  1, #cen error term
+  1, #decen error term
+  0.0689, #decen prop positive
+  0.0646, #cen prop positive
+  2.41 #cen ssm cost
+)
+#Parameter 1 is min, 2 is max, 3 is PE
+```
+
+
+```{r add the alpha and beta values}
+#Updated with inflation
+param.ranges[,"parameter1.name"]<-c( #The ALPHA value
+  4, #number presenting for care
+  4, #central proportion tested
+  4, #central proportion TB+
+  4, #decen proportion tested
+  4, #decentral proportion TB+
+  4, #central consumable costs
+  4, #central staff costs
+  4, #central equipment costs
+  4, #central building costs
+  4, #central overhead costs
+  4, #central transport costs
+  4, #decen consumable costs
+  4, #decen staff costs
+  4, #decen equipment costs
+  4, #decen building costs
+  4, #decen overhead costs
+  4, #decen implementation costs
+  4, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop positive
+  4, #cen prop positive
+  4 #cen ssm cost
+  )
+  
+param.ranges[,"parameter2.name"]<-c( #The BETA value
+  4, #total number tested
+  4, #central proportion tested
+  3.980434, #central proportion TB+
+  1, #decen proprtion tested
+  4, #decentral proportion TB+
+  4.798187, #central consumable costs
+  6.076922, #central staff costs
+  1, #central equipment costs
+  10.52941, #central building costs
+  88, #central overhead costs
+  7.2965603, #central transport costs
+  22, #decen consumable costs
+  4, #decen staff costs
+  1, #decen equipment costs
+  10, #decen building costs
+  7, #decen overhead costs
+  1, #decen implementation costs
+  10.48649, #decen maintenance costs
+  4, #cen error term
+  4, #decen error term
+  4, #decen prop pos
+  4, #den prop pos
+  5.39 #cen ssm cost
+  )
+  
+param.ranges[,"parameter3.name"]<-c(#Non-centrality parameter, ask David/Hojoon what that is
+  0, #number presenting
+  0, #central proprtion tested
+  0, #central proportion TB+ and start 14 days
+  0, #decen proportion tested
+  0, #decentral proportion TB+ and start 14 days
+  0, #central consumable costs
+  0, #central staff costs
+  0, #central equipment costs
+  0, #central building costs
+  0, #central overhead costs
+  0, #central transport costs
+  0, #decen consumable costs
+  0, #decen staff costs
+  0, #decen equipment costs
+  0, #decen building costs
+  0, #decen overhead costs
+  0, #decen implementation costs
+  0, #decen maintenance costs
+  0, #cen error term
+  0, #decen error term
+  0, #decen prop pos
+  0, #cen prop pos
+  0 #cen ssm cost
+  )
+
+
+```
+
+```{r simulation prep, repetitions and matrix}
+#Define the number of simulations you intend to perform
+set.seed(269130)
+n.sims<-4000
+
+
+#Create a matrix to hold all of the sampled parameter values
+#Each row will represent 1 simulation; the columns in the row will correspond to the sampled parameter values for the row
+sampled.values<-matrix(nrow=n.sims,ncol=nrow(param.ranges))
+colnames(sampled.values)<-param.ranges[,"variable"]
+
+#Loop over the parameters (columns in sampled.values, rows in param.ranges) that will be sampled
+for(p in 1:ncol(sampled.values)){
+  
+  #check for the distribution that will be used
+  #check for a uniform distribution
+  if(param.ranges[p,"distribution"]=="uniform"){
+    
+    n.params<-runif( #sample from a uniform distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      min=param.ranges[p,"parameter1"], #define the lower bound parameter
+      max=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  #if not uniform, check if it is normal
+  if(param.ranges[p,"distribution"]=="normal"){
+    
+    n.params<-rnorm( #sample from a normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      mean=param.ranges[p,"parameter1"], #define the lower bound parameter
+      sd=param.ranges[p,"parameter2"] #define the upper bound
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not uniform, check if it is lognormal
+  if(param.ranges[p,"distribution"]=="lognormal"){
+    
+    n.params<-rlnorm( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      meanlog=param.ranges[p,"parameter1"], #define the mean parameter
+      sdlog=param.ranges[p,"parameter2"] #define the standard deviation parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not lognormal, check if it is gamma
+  if(param.ranges[p,"distribution"]=="gamma"){
+    n.params<-rgamma( #sample from a log-normal distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape=param.ranges[p,"parameter1"], #define the k parameter
+      scale=param.ranges[p,"parameter2"] #define the theta parameter
+    )
+    #exit the if-loop and go to the end
+    
+  }
+  
+  #if not gamma, check if it is triangular
+  if(param.ranges[p,"distribution"]=="triangular"){
+    n.params<- rtriangle( #sample from a triangular distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      a = param.ranges[p,"parameter1"], #define the lower bound paramater/parameter input 1
+      b = param.ranges[p,"parameter2"], #define the upper bound parameter
+      c = param.ranges[p,"parameter3"] #define the mode/central tendency parameter
+    )
+  }
+  
+  #if not triangular, check if it is beta
+  if(param.ranges[p,"distribution"]=="beta"){
+    n.params<- rbeta( #sample from a beta distribution
+      n.sims, #how many samples to draw = the number of simulations you will perform
+      shape1 = param.ranges[p,"parameter1.name"], #define the alpha shape parameter
+      shape2 = param.ranges[p,"parameter2.name"], #define the beta shape parameter
+      ncp = param.ranges[p,"parameter3.name"] #define the non-centrality parameter (should be 0)
+    ) 
+    #(parameter1 + (p *(parameter2 - parameter1)))
+  }
+  sampled.values[,p]<-n.params #fill the column of the matrix with the vector of sampled values
+  
+  #go to the next column
+}
+
+```
+
+
+
+```{r calculate "true" simulated values}
+#Change variable names to match 99DOTS, no other changes
+num.presenting <- (sampled.values[,1] * (param.ranges[1,4] - param.ranges[1,3])) + param.ranges[1,3]
+
+cen.testedpro <- (sampled.values[,2] * (param.ranges[2,4] - param.ranges[2,3])) + param.ranges[2,3] #For central testing volume
+
+cen.14daypro <- (sampled.values[,3] * (param.ranges[3,4] - param.ranges[3,3])) + param.ranges[3,3] #For proportion of cases tested that are TB+
+
+decen.testedpro <- (sampled.values[,4] * (param.ranges[4,4] - param.ranges[4,3])) + param.ranges[4,3] #Decent testing volume
+
+decen.14daypro <- (sampled.values[,5] * (param.ranges[5,4] - param.ranges[5,3])) + param.ranges[5,3] #Proportion tested with TB, decentralized
+
+cen.consumable.cost <- (sampled.values[,6] * (param.ranges[6,4] - param.ranges[6,3])) + param.ranges[6,3] #Cen consumable cost
+
+cen.staff.cost <- (sampled.values[,7] * (param.ranges[7,4] - param.ranges[7,3])) + param.ranges[7,3] #Cen staff cost
+
+cen.equipment.cost <- (sampled.values[,8] * (param.ranges[8,4] - param.ranges[8,3])) + param.ranges[8,3] #Cen equipment cost
+
+cen.building.cost <- (sampled.values[,9] * (param.ranges[9,4] - param.ranges[9,3])) + param.ranges[9,3] #Cen building cost
+
+cen.overhead.cost <- (sampled.values[,10] * (param.ranges[10,4] - param.ranges[10,3])) + param.ranges[10,3] #Cen overhead cost, double check this one
+
+cen.transport.cost <- (sampled.values[,11] * (param.ranges[11,4] - param.ranges[11,3])) + param.ranges[11,3] #Cen transport cost
+
+decen.consumable.cost <- (sampled.values[,12] * (param.ranges[12,4] - param.ranges[12,3])) + param.ranges[12,3] #Decen consumable cost
+
+decen.staff.cost <- (sampled.values[,13] * (param.ranges[13,4] - param.ranges[13,3])) + param.ranges[13,3] #Decen staff cost
+
+decen.equipment.cost <- (sampled.values[,14] * (param.ranges[14,4] - param.ranges[14,3])) + param.ranges[14,3] #Decen equipment cost
+
+decen.building.cost <- (sampled.values[,15] * (param.ranges[15,4] - param.ranges[15,3])) + param.ranges[15,3] #Decen building cost
+
+decen.overhead.cost <- (sampled.values[,16] * (param.ranges[16,4] - param.ranges[16,3])) + param.ranges[16,3] #Decen overhead cost
+
+decen.impl.cost <- (sampled.values[,17] * (param.ranges[17,4] - param.ranges[17,3])) + param.ranges[17,3] #Decen implementation cost
+
+decen.main.cost <- (sampled.values[,18] * (param.ranges[18,4] - param.ranges[18,3])) + param.ranges[18,3] #Decen maintenance costs
+
+cen.error.term <- (sampled.values[,19] * (param.ranges[19,4] - param.ranges[19,3])) + param.ranges[19,3] #Cen error term
+
+decen.error.term <- (sampled.values[,20] * (param.ranges[20,4] - param.ranges[20,3])) + param.ranges[20,3] #
+
+decen.propositive <- (sampled.values[,21] * (param.ranges[21,4] - param.ranges[21,3])) + param.ranges[21,3] #
+
+cen.propositive <- (sampled.values[,22] * (param.ranges[22,4] - param.ranges[22,3])) + param.ranges[22,3] #
+
+cen.ssm.cost <- (sampled.values[,23] * (param.ranges[23,4] - param.ranges[23,3])) + param.ranges[23,3] #cen ssm cost
+
+#Change to reflect 99DOTS values
+sampled.values.true <- cbind(num.presenting,
+                           cen.testedpro,
+                           cen.14daypro,
+                           decen.testedpro,
+                           decen.14daypro,
+                           cen.consumable.cost,
+                           cen.staff.cost,
+                           cen.equipment.cost,
+                           cen.building.cost,
+                           cen.overhead.cost,
+                           cen.transport.cost,
+                           decen.consumable.cost,
+                           decen.staff.cost,
+                           decen.equipment.cost,
+                           decen.building.cost,
+                           decen.overhead.cost,
+                           decen.impl.cost,
+                           decen.main.cost,
+                           cen.error.term,
+                           decen.error.term,
+                           decen.propositive,
+                           cen.propositive,
+                           cen.ssm.cost
+                           )
+
+                             
+```
+
+```{R Run the Simulations}
+#NO CHANGES
+#Perform your simulations using a combination of apply() and do.call()
+#apply() will iteratively perform the same function to each row and/or column of a matrix argument
+#The matrix of sampled input values will serve as our matrix argument X
+#We will set MARGIN=1 to indicate that we want to iterate over the rows (not columns) of the matrix
+#We will create a custom function to apply over each row (r)
+#The key of the custom function is do.call() 
+#do.call() calls a function of your choice and passes user-defined arguments to it
+#we will use it to call our previously-defined function treatment.sim()
+#We will supply it our row of sampled input values as user-defined arguments
+#arguments for do.call() must be in the form of a list: as.list(r)
+#apply() returns the outputs of each iteration as a column of a matrix
+#for ease of use, we will transpose - t() - the matrix so that each iteration will be returned as a row
+
+sim.out1<-t(apply(X=sampled.values.true,MARGIN=1, FUN=function(r) do.call(what=treatment.sim, args=as.list(r)) ))
+#for each row of sampled.values, run function r which is our treatment.sim formula.
+sim.out.df1 <- as.data.frame(sim.out1)
+
+
+
+#Becase treatment.sim() returns a vector of 4 results ("Scenario1.Cure","Scenario1.Cost","Scenario2.Cure","Scenario2.Cost")
+#sim.out contains 4 columns, each corresponding to one of the outputs of treatment.sim()
+#The first row of sim.out corresponds to the results of the simulation created by the first row of sampled input values in sampled.value
+```
+
+```{r scatter plot of service volumes}
+#Treatment Initiation
+ICERscatter <- sim.out.df1
+
+ICERscatter <- ICERscatter %>% filter(`ICER` < 3000)
+
+ggplot(ICERscatter, aes(x = `Number presenting for care`, y = `ICER`)) + geom_point(shape = 18, color = "#009E73") + geom_smooth(method = "loess", level = 0.95, color = "#56B4E9", se =FALSE) + theme_bw() +theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size = 16), axis.text = element_text(size = 16)) + scale_x_continuous(breaks = seq(0, 1000, 250))  + scale_y_continuous(breaks = seq(0, 2500, 500)) + labs(x = "Annual Number of Suspected Tuberculosis Patients Presenting for Care, Per Clinic", y = "Cost per Additional Patient Initiating Treatment within 14 Days (2019 USD)") #+ expand_limits(x=c(0,1000), y=c(0,2500))
+
+```
+
+
+```{r scatter plot of service volumes}
+ICERscatterdx <- sim.out.df1
+
+ICERscatterdx <- ICERscatter %>% filter(`ICER Dx` < 10000 & `ICER Dx` > -2000)
+
+ggplot(ICERscatterdx, aes(x = `Number presenting for care`, y = `ICER Dx`)) + geom_point(shape = 18, color = "#009E73") + geom_smooth(method = "loess", level = 0.95, color = "#56B4E9", se = FALSE) + theme_bw() +theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), text = element_text(size = 16), axis.text = element_text(size = 16)) + scale_x_continuous(breaks = seq(0, 1000, 250))  + scale_y_continuous(breaks = seq(0, 10000, 2000)) + labs(x = "Annual Number of Suspected Tuberculosis Patients Presenting for Care, Per Clinic", y = "Cost per Additional Tuberculosis Case Detected (2019 USD)") #+expand_limits(x=c(0,1000))
+
+
+```
+
+
